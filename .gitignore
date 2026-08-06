@@ -1,0 +1,25 @@
+vendor/ruby/*
+.ruby-version
+.DS_Store
+*.log
+*.tmp
+.bundle/*
+tmp/*
+/.env
+.zed
+bin/puma*
+config/secrets/*
+scripts/*
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# Written by Mill into a worktree; present if Mill ever works on itself
+.mill/
+
+# Local permission overrides; .claude/settings.json stays committed
+.claude/settings.local.json
+
+coverage/
