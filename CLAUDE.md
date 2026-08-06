@@ -52,13 +52,15 @@ When you have a reasoned counterargument, state it clearly before accepting my d
 
 ## Safety invariants
 
-Load-bearing. Breaking one is a bug regardless of what a task appears to ask for. Rationale for each is in the design doc.
+Rules about the code you write here. Breaking one is a bug regardless of what a task appears to ask for. Mill's *runtime* requirements — containment layers, author gating, ceilings — live in the design doc's Containment and Back-pressure sections; do not restate them here.
 
-- Never call `gh pr merge`. Mill does not merge.
-- Never widen a stage's filesystem reach: own worktree, `cwd` set there, no `--add-dir`.
-- Never post a comment without the `<!-- mill:v1 -->` marker. It is the only thing preventing a self-trigger loop.
-- Never change the `PreToolUse` safety hook without extending its refusal tests.
-- Never add a retry path that bypasses the two-attempts-per-stage counter.
+- Never write a call to `gh pr merge`. Mill does not merge.
+- Never post a comment except through `Mill::Github`. It stamps the marker; a second comment path is how the self-trigger loop gets reintroduced.
+- Never add a retry path around the two-attempts-per-stage counter. The one sanctioned reset is the exhaustion-block path already specified.
+- Never signal a bare pid. Stages run in their own process group; signal the group and confirm no descendant survives.
+- Never loosen a permission ruleset in `~/.mill/settings/` or add `--dangerously-skip-permissions` to the argv builder to make a stage work. A stage that needs a new capability needs a reviewed rule, not a bypass.
+- Never bypass or short-circuit verdict validation in `Mill::Claude` — envelope match, artifact path resolution, cost present.
+- Never add a rule to the `PreToolUse` hook and treat a containment gap as closed. The hook guards against model error; it is not the boundary.
 
 ---
 
@@ -86,6 +88,7 @@ Load-bearing. Breaking one is a bug regardless of what a task appears to ask for
 - **The poller and supervisor threads start with the app.** When working on the web layer, run with `MILL_WORKERS=off` so a stray `mill:ready` label does not launch a real run against a real repo while you are editing.
 - **Never invoke `claude` by hand from application code paths under test.** `Mill::Claude` is the only component that spawns a subprocess, and tests drive it through a fake backed by recorded `stream-json` fixtures in `test/fixtures/`.
 - **Never invoke `gh` by hand from application code paths.** `Mill::Github` is the only component that shells out to `gh`; tests use recorded JSON fixtures.
+- **`bundle exec rake test`** is everything fixture-backed and is what CI runs. **`bundle exec rake test:boundary`** runs the permission suite against the real `claude` CLI and cannot run in CI — run it locally before merging any change to containment, the argv builder, or the rulesets in `~/.mill/settings/`.
 
 ### Context management
 
@@ -103,19 +106,21 @@ Load-bearing. Breaking one is a bug regardless of what a task appears to ask for
 
 **GitHub Issues is the canonical location for idea and bug tracking**, and for Mill it is also the work queue. Use the `gh` CLI directly.
 
-**Viewing issues:**
-- `gh issue list --label mill:ready` - the queue
-- `gh issue list --label mill:blocked` - runs waiting on your answer
+The queue is a **GitHub Project Status field**, not a label — Mill uses no labels at all. Projects v2 is GraphQL-only, so board reads go through `gh project item-list` or `gh api graphql`, not `gh issue list`.
+
+**Viewing work:**
+- `gh project item-list <number> --owner slowernet --format json` - the board
 - `gh issue view 42 --comments` - full detail including the Q&A thread
+- `gh issue develop 42` - create and link a branch to an issue; this is how a spec reaches Mill
 
 **Creating and updating issues:**
 - `gh issue create --title 'Title' --label 'bug,p1' --body-file -` — use `--body-file -` with a heredoc for multi-line bodies rather than escaping into `--body`
 - `gh issue edit 42 --body-file -` — same pattern for updates
 
-Label vocabulary is in `docs/reference/mill.md`.
+Board statuses and directive fields are in `docs/reference/mill.md`.
 
 **Best practices:**
-- Fetch issue status at the start of planning sessions
+- Fetch board state at the start of planning sessions
 - Keep issues focused on single concerns - split if too many line items
 - An issue Mill will act on is a spec. Underspecified issues get blocked and cost a round trip, so write the constraints down the first time.
 
@@ -214,7 +219,8 @@ When moving filtering from Ruby into a query (SQL, or a `gh` API search):
 **GitHub numbers and GitHub ids are different things, and neither is globally unique in the way you expect.**
 
 - **Issue and PR numbers** are integers, unique only within a repository. `#42` is meaningless without a repo. Always carry `repo_id` alongside.
-- **Node ids** (`gh_node_id`) are opaque strings — never parse, order, or arithmetic them. They are the dedupe key for events precisely because they are stable and unique across the whole of GitHub.
+- **Node ids** (`gh_node_id`) are opaque strings — never parse, order, or arithmetic them. They are the dedupe key for comment events precisely because they are stable and unique across the whole of GitHub.
+- **Project item ids, field ids, and option ids** are three distinct opaque strings, all required to set a Status. They are resolved at bootstrap and cached; never hardcode one, and never assume an item id is derivable from the issue it wraps.
 - **Session ids** from Claude Code are opaque strings, and the session file behind one may vanish. Any code path that resumes a session must have a fallback that re-runs the stage from scratch.
 - **Mill run ids** are local integers and mean nothing outside this database. Never put one in a GitHub comment as though the user could look it up.
 

@@ -1,37 +1,77 @@
 # Mill reference
 
-Domain vocabulary and operational reference. Architecture, the stage graph, the failure
-taxonomy, and scope decisions live in
+Domain vocabulary and operational reference. The pipeline, the stage graph, containment, the
+failure taxonomy, and scope decisions live in
 `docs/superpowers/specs/2026-08-06-software-factory-design.md`.
+
+First-time setup is a separate runbook: [setup.md](setup.md).
 
 ## Contents
 
-- [Label vocabulary](#label-vocabulary)
+- [The board](#the-board)
+- [Releasing work](#releasing-work)
 - [Key models](#key-models)
 
-## Label vocabulary
+## The board
 
-Mill creates these in a repository on enablement, and swaps them as a run progresses:
-`mill:ready` becomes `mill:running` when a run is claimed, `mill:blocked` when it stops
-for input, `mill:done` when the PR opens. The labels are the queue — the state of a piece
-of work is legible in GitHub without opening Mill.
+A single user-level GitHub Project spans every repo, and its fields are Mill's entire
+interface. Both issues and pull requests appear as items. **Mill uses no labels.**
 
-| Label | Meaning |
+**Status** — the queue. Mill is its sole writer.
+
+| Status | Meaning |
 |---|---|
-| `mill:ready` | Release this issue to the factory |
-| `mill:running` | A run has claimed it |
-| `mill:blocked` | Stopped for your input; reply in a comment to resume |
-| `mill:done` | PR opened |
-| `mill:small` | Force the small route (skip design and plan) |
-| `mill:evidence` | The PR must include a before/after sample of real output |
+| `Ready` | Released to the factory |
+| `Running` | A run has claimed it |
+| `Blocked` | Stopped for input; reply in a comment to resume |
+| `Done` | PR opened |
+| `Failed` | Terminal without a PR |
+
+**Directives** — yours to set. Projects v2 has no boolean field type, so each is a
+single-select with one option: set or unset.
+
+| Field | Option | Meaning |
+|---|---|---|
+| `Evidence` | `Required` | The PR must include a before/after sample of real output |
+| `Review` | `Deep` | Faceted fan-out plus refutation instead of a single reviewer |
+
+Status is state and belongs to Mill; the other two are directives and belong to you. Don't
+hand-edit Status to steer a run — set it to `Ready` to release work, and use the kill switch
+to stop one.
+
+Field values belong to the project, not the issue, so an item's Status here is independent of
+its status on any other board, and no other project's automation can reach it. The board's own
+built-in workflows must stay disabled, because they write Status too — `mill:doctor` checks.
+
+`Done` means "PR opened", not "finished". The three PR triggers operate after it.
+
+## Releasing work
+
+The normal path for a feature:
+
+1. **Design it interactively.** `gh issue develop <n>` to create and link a branch, then a
+   normal Claude Code session — `brainstorming`, argument, revision. It commits a spec to
+   `docs/superpowers/specs/`.
+2. **Push the branch.** The linked branch is how Mill finds the spec; no path goes in the issue
+   body.
+3. **Set Status to `Ready`.** That act asserts the design is reviewed.
+
+Mill adopts the branch, plans, implements, reviews, and opens a PR with the spec, the plan, and
+the code in one diff.
+
+For a crash or a one-line fix, skip steps 1 and 2 — set Status to `Ready` on an issue with no
+linked branch and triage will route it to the fast path. An issue with neither a spec nor a
+hotfix shape will block and ask you to think it through.
 
 ## Key models
 
-- **Repo**: an enabled GitHub repository, its resolved local clone path, and per-repo config from `.mill.yml`
-- **Run**: one issue moving through the pipeline in one worktree on one branch
-- **Route**: which graph a run walks — `full` (design, plan, implement, with adversarial review after each) or `small` (implement and review only)
-- **Stage**: a node in the graph; one `claude -p` invocation with a fixed model and a named skill
-- **Attempt**: one execution of a stage. Two per stage maximum, then the run blocks.
-- **Verdict**: `.mill/verdict.json`, written by every stage as its last action. Status is `ok`, `blocked`, or `failed`; carries the artifact path, questions, objections, and a summary.
-- **Event**: a GitHub occurrence the poller has seen, keyed on node id so it is processed exactly once
-- **Evidence requirement**: a flag on a run meaning the PR must include a before/after sample of real output, judged by a human rather than by a metric
+- **Repo**: a repository Mill has prepared — resolved local clone path, git config applied, `.mill.yml` parsed from the base branch. Prepared lazily on first touch; not a watchlist. The repo allowlist is the stage token's selected-repositories list.
+- **Subject**: the thing a run is about — an issue or a pull request, as `subject_kind` plus `subject_number`. PR-entry runs have no issue.
+- **Run**: one subject moving through the pipeline on one branch, in one worktree
+- **Route**: `plan` (a spec exists — plan, review, implement, review, PR), `fast` (no spec, hotfix-shaped — diagnose, implement, review, PR), or `iterate` (entry from a PR trigger, on the existing branch)
+- **Spec**: the design you wrote, found as the file the linked branch adds under `docs/superpowers/specs/`. Exactly one; zero or many blocks.
+- **Stage**: a node in the graph; one `claude -p` process group with a fixed model, a named skill, and its own permission ruleset
+- **Attempt**: one execution of a stage. Two per stage, then the run blocks. Answering an exhaustion block resets that stage's counter once.
+- **Verdict**: JSON written by every attempt to `~/.mill/runs/<run-id>/verdict-<stage>-<n>.json`, outside the repo. Must carry the stage, attempt, and nonce Mill passed in; status is `ok`, `blocked`, or `failed`.
+- **Objection**: a reviewer finding with a severity. `high` or `critical` re-runs the reviewed stage; lower severities land in the PR body.
+- **Event**: a comment occurrence the poller has seen, keyed on node id, with a retry count and a terminal `dead` state. Board status is *not* an event — it is reconciled as state.
