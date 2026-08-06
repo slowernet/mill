@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+          bundler-cache: true
+
+      # `rake test` excludes test:boundary, which asserts the permission ruleset
+      # against the real claude CLI and cannot run here. See docs/.../design.md Testing.
+      - run: bundle exec rake test
