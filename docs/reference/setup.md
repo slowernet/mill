@@ -1,6 +1,6 @@
-# Mill setup runbook
+# mill setup runbook
 
-One-time, account-level setup. Per-repo preparation is **lazy** — Mill resolves the clone,
+One-time, account-level setup. Per-repo preparation is **lazy** — mill resolves the clone,
 applies git config, and reads `.mill.yml` the first time an item from that repo reaches the
 board. There is no repo watchlist and nothing to enable.
 
@@ -24,7 +24,7 @@ running it over trusting this document — it checks reality.
 
 ## 1. Two tokens, two jobs
 
-Mill uses two separate credentials, and keeping them separate is the point.
+mill uses two separate credentials, and keeping them separate is the point.
 
 | Credential | Used by | Needs |
 |---|---|---|
@@ -32,10 +32,10 @@ Mill uses two separate credentials, and keeping them separate is the point.
 | A fine-grained PAT | Stages, as `GH_TOKEN` | Contents and Pull requests, read/write, on selected repos only |
 
 The stage token is deliberately weaker. Stages push branches and open PRs; they never touch the
-board, never post comments, and never need access to any repo but their own. Mill does the board
+board, never post comments, and never need access to any repo but their own. mill does the board
 and comment work under your login, in-process, where the agent cannot reach it.
 
-**The stage token is also Mill's repo allowlist.** If it does not cover a repo, no bug in Mill
+**The stage token is also mill's repo allowlist.** If it does not cover a repo, no bug in mill
 can push there. Keep its repository list short and revisit it when you start work somewhere new.
 
 ## 2. Project scope on your gh login
@@ -50,13 +50,13 @@ gh auth status
 ## 3. Create the board
 
 ```
-gh project create --owner @me --title "Mill"
+gh project create --owner @me --title "mill"
 ```
 
 Note the project number it prints.
 
-Mill reads three fields and writes one. Check what exists first — a project may arrive with a
-default `Status` field whose options are `Todo` / `In Progress` / `Done`, which are not Mill's:
+mill reads three fields and writes one. Check what exists first — a project may arrive with a
+default `Status` field whose options are `Todo` / `In Progress` / `Done`, which are not mill's:
 
 ```
 gh project field-list <number> --owner @me --format json
@@ -91,13 +91,13 @@ gh project field-list <number> --owner @me --format json
 ```
 
 Item id, field id, and option id are three distinct opaque strings and all three are required to
-set a value. Mill caches them; do not hardcode them anywhere.
+set a value. mill caches them; do not hardcode them anywhere.
 
-Mill uses no labels, so there is nothing to create in any repository.
+mill uses no labels, so there is nothing to create in any repository.
 
 ## 4. Disable the board's built-in workflows
 
-**Mill is the sole writer of the Status field.** Projects v2 ships automation that also writes
+**mill is the sole writer of the Status field.** Projects v2 ships automation that also writes
 it, and a new project may arrive with some of it enabled.
 
 In the project's **Workflows** settings, turn off every built-in workflow — including "Item
@@ -111,8 +111,8 @@ Two are actively harmful rather than merely redundant:
 - **"Auto-add to project"** would sweep every new issue in a repo onto the board. Since the board
   is the queue, that is a mass trigger.
 
-Nobody else's project automation can touch Mill's board — fields belong to the project, not the
-issue — so this is only ever about Mill's own project.
+Nobody else's project automation can touch mill's board — fields belong to the project, not the
+issue — so this is only ever about mill's own project.
 
 ## 5. Mint the stage token
 
@@ -120,7 +120,7 @@ No API exists for this. In the web UI:
 
 1. **Settings → Developer settings → Personal access tokens → Fine-grained tokens**, create a
    new token.
-2. **Repository access:** *Only select repositories*. Add only repos you intend Mill to work in.
+2. **Repository access:** *Only select repositories*. Add only repos you intend mill to work in.
 3. **Repository permissions:** `Contents` read and write, `Pull requests` read and write.
    Nothing else. In particular do not grant Actions, Secrets, Administration, or Workflows — a
    stage that could write workflows could exfiltrate repository secrets by pushing a branch.
@@ -137,9 +137,9 @@ chmod 0600 ~/.mill/secrets/stage-token
 
 ## 6. Branch protection
 
-Mill's CI trigger fires on **required** checks going red, so the base branch needs branch
+mill's CI trigger fires on **required** checks going red, so the base branch needs branch
 protection with required status checks. This also makes CI a real merge gate for you, not just a
-signal for Mill.
+signal for mill.
 
 Per repo, once:
 
@@ -171,7 +171,7 @@ env-dependent test suite would fail on both attempts. For each repo whose tests 
 ~/.mill/secrets/<owner>-<repo>.env
 ```
 
-Plain `KEY=value` lines. Mill injects these into the stage environment as variables, never writes
+Plain `KEY=value` lines. mill injects these into the stage environment as variables, never writes
 them into the worktree, and excludes their values from the tee'd log. List the variable names in
 that repo's `.mill.yml` so `mill:doctor` can check they are present.
 
@@ -199,5 +199,5 @@ It checks, and names anything missing:
   workflow whose checks are required on the base branch, and every secret variable it names is
   present
 
-Treat a red doctor as a blocker. Most of what it checks is load-bearing for containment rather
-than convenience.
+Treat a red doctor as a blocker. Most of what it checks is critical to containment rather than
+a convenience.

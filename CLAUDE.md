@@ -31,10 +31,10 @@ The user may ask questions to understand the system, not to request changes. Do 
 ## Basic project facts
 
 - This is a Ruby application built on the Roda web framework, with Sequel over SQLite, served by Puma, tested with Minitest
-- Mill is an orchestrator: it drives Claude Code through a fixed agentic SDLC for work that arrives as GitHub activity, and opens a pull request. It never merges.
+- mill is an orchestrator: it drives Claude Code through a fixed agentic SDLC for work that arrives as GitHub activity, and opens a pull request. It never merges.
 - **Full automation only**: every stage must run unattended. Avoid any design that needs an interactive prompt, a terminal attached, or a human standing in the middle of the pipeline. When an agent cannot proceed, the answer is always to emit questions and block, never to wait.
 - **Silence is never success**: a stage that produces no verdict has failed. Never infer a pass from the absence of an error.
-- **Testing against GitHub**: use a scratch repo you own for end-to-end exercises. Mill acts on LIVE repositories with your own credentials — tests MUST NOT write to a real repo, push a branch, comment on a real issue, or open a real PR. Unit and integration tests use recorded fixtures and never reach the network.
+- **Testing against GitHub**: use a scratch repo you own for end-to-end exercises. mill acts on LIVE repositories with your own credentials — tests MUST NOT write to a real repo, push a branch, comment on a real issue, or open a real PR. Unit and integration tests use recorded fixtures and never reach the network.
 - **Design doc**: `docs/superpowers/specs/2026-08-06-software-factory-design.md` is the source of truth for architecture, the stage graph, the failure taxonomy, and what is deliberately out of scope. Read it before changing the pipeline, and update it when a decision changes.
 - **Reference docs**: refer to and maintain `docs/reference/` for domain-specific rules and system documentation. Check relevant reference docs before modifying the systems they describe.
 
@@ -52,11 +52,11 @@ When you have a reasoned counterargument, state it clearly before accepting my d
 
 ## Safety invariants
 
-Rules about the code you write here. Breaking one is a bug regardless of what a task appears to ask for. Mill's *runtime* requirements — containment layers, author gating, ceilings — live in the design doc's Containment and Back-pressure sections; do not restate them here.
+Rules about the code you write here. Breaking one is a bug regardless of what a task appears to ask for. mill's *runtime* requirements — the containment layers, who may trigger a run, the spend ceilings — live in the design doc's Ingress, Containment, and Back-pressure sections; do not restate them here.
 
-- Never write a call to `gh pr merge`. Mill does not merge.
-- Never post a comment except through `Mill::Github`. It stamps the marker; a second comment path is how the self-trigger loop gets reintroduced.
-- Never add a retry path around the two-attempts-per-stage counter. The one sanctioned reset is the exhaustion-block path already specified.
+- Never write a call to `gh pr merge`. mill does not merge.
+- Never post a comment except through `Mill::Github`. It stamps the marker; a second comment path lets mill trigger itself again.
+- Never add a retry path around the two-attempts-per-stage counter. The design sanctions exactly one reset: when you answer a run that blocked because a stage ran out of attempts. Resuming a session after a stall or a reviewer objection is not a retry — it continues the same attempt or starts attempt 2 within the existing counter.
 - Never signal a bare pid. Stages run in their own process group; signal the group and confirm no descendant survives.
 - Never loosen a permission ruleset in `~/.mill/settings/` or add `--dangerously-skip-permissions` to the argv builder to make a stage work. A stage that needs a new capability needs a reviewed rule, not a bypass.
 - Never bypass or short-circuit verdict validation in `Mill::Claude` — envelope match, artifact path resolution, cost present.
@@ -85,14 +85,14 @@ Rules about the code you write here. Breaking one is a bug regardless of what a 
 - **Development server runs at**: `http://localhost:9494`
 - Always use `bundle exec` prefix for rake tasks and ruby commands
 - To run inline Ruby scripts: `bundle exec ruby -e "load 'app.rb'; ..."`
-- **The poller and supervisor threads start with the app.** When working on the web layer, run with `MILL_WORKERS=off` so a stray `mill:ready` label does not launch a real run against a real repo while you are editing.
+- **The poller and supervisor threads start with the app.** When working on the web layer, run with `MILL_WORKERS=off` so a stray `Ready` status on the board does not launch a real run against a real repo while you are editing.
 - **Never invoke `claude` by hand from application code paths under test.** `Mill::Claude` is the only component that spawns a subprocess, and tests drive it through a fake backed by recorded `stream-json` fixtures in `test/fixtures/`.
 - **Never invoke `gh` by hand from application code paths.** `Mill::Github` is the only component that shells out to `gh`; tests use recorded JSON fixtures.
 - **`bundle exec rake test`** is everything fixture-backed and is what CI runs. **`bundle exec rake test:boundary`** runs the permission suite against the real `claude` CLI and cannot run in CI — run it locally before merging any change to containment, the argv builder, or the rulesets in `~/.mill/settings/`.
 
 ### Context management
 
-- **Use Task tool proactively for complex tasks**: Multi-file searches, pattern discovery, codebase exploration, document consolidation, large refactoring analysis, or any task requiring multiple rounds of file operations
+- **Use Task tool proactively for complex tasks**: searching many files, discovering a pattern, exploring the codebase, consolidating documents, analyzing a large refactor, or any task that needs several rounds of file operations
 - Use direct file reads (Read/Grep/Glob) only when you know the specific file path or pattern
 - This avoids "prompt too long" errors and improves performance on complex tasks
 
@@ -100,18 +100,18 @@ Rules about the code you write here. Breaking one is a bug regardless of what a 
 
 - When I say "store this" after you produce an extended reference document, store it in `docs/`
 - Whenever you update a documentation file, make sure to update its table of contents
-- **Designs** go in `docs/superpowers/specs/`, **plans** go in `docs/superpowers/plans/`, **output samples** go in `docs/superpowers/samples/`. These are the Superpowers defaults and Mill writes to the same paths in every repo it works in — do not fork the convention. GitHub issues serve as task trackers with summaries, not full plans.
+- **Designs** go in `docs/superpowers/specs/`, **plans** go in `docs/superpowers/plans/`, **output samples** go in `docs/superpowers/samples/`. These are the Superpowers defaults and mill writes to the same paths in every repo it works in — do not fork the convention. GitHub issues serve as task trackers with summaries, not full plans.
 
 ### GitHub issue workflow
 
-**GitHub Issues is the canonical location for idea and bug tracking**, and for Mill it is also the work queue. Use the `gh` CLI directly.
+**GitHub Issues is the canonical location for idea and bug tracking**, and for mill it is also the work queue. Use the `gh` CLI directly.
 
-The queue is a **GitHub Project Status field**, not a label — Mill uses no labels at all. Projects v2 is GraphQL-only, so board reads go through `gh project item-list` or `gh api graphql`, not `gh issue list`.
+The queue is a **GitHub Project Status field**, not a label — mill uses no labels at all. Projects v2 is GraphQL-only, so board reads go through `gh project item-list` or `gh api graphql`, not `gh issue list`.
 
 **Viewing work:**
 - `gh project item-list <number> --owner slowernet --format json` - the board
 - `gh issue view 42 --comments` - full detail including the Q&A thread
-- `gh issue develop 42` - create and link a branch to an issue; this is how a spec reaches Mill
+- `gh issue develop 42` - create and link a branch to an issue; this is how a spec reaches mill
 
 **Creating and updating issues:**
 - `gh issue create --title 'Title' --label 'bug,p1' --body-file -` — use `--body-file -` with a heredoc for multi-line bodies rather than escaping into `--body`
@@ -122,7 +122,7 @@ Board statuses and directive fields are in `docs/reference/mill.md`.
 **Best practices:**
 - Fetch board state at the start of planning sessions
 - Keep issues focused on single concerns - split if too many line items
-- An issue Mill will act on is a spec. Underspecified issues get blocked and cost a round trip, so write the constraints down the first time.
+- An issue mill will act on is a spec. mill blocks an underspecified issue, and that costs you a round trip, so write the constraints down the first time.
 
 ---
 
@@ -132,7 +132,7 @@ Board statuses and directive fields are in `docs/reference/mill.md`.
 
 - **Use multiple choice questions** to flesh out specs, resolve ambiguity, and clarify requirements - this is faster and clearer than open-ended questions
 - For larger tasks, **ask questions until you are 95% sure what to do**, then make a plan, and summarize it for me.
-- Before finalizing any plan, **perform a critique pass checking for: opportunities for code reuse and deduplication, and overall simplicity**
+- Before finalizing any plan, **critique it: what code could it reuse, what does it duplicate, and could it be simpler?**
 - Avoid rewriting/restructuring working code unnecessarily
 - Make only the changes needed to accomplish the stated goal
 - Ask for clarification when unsure about existing patterns
@@ -220,10 +220,10 @@ When moving filtering from Ruby into a query (SQL, or a `gh` API search):
 
 - **Issue and PR numbers** are integers, unique only within a repository. `#42` is meaningless without a repo. Always carry `repo_id` alongside.
 - **Node ids** (`gh_node_id`) are opaque strings — never parse, order, or arithmetic them. They are the dedupe key for comment events precisely because they are stable and unique across the whole of GitHub.
-- **Project item ids, field ids, and option ids** are three distinct opaque strings, all required to set a Status. They are resolved at bootstrap and cached; never hardcode one, and never assume an item id is derivable from the issue it wraps.
+- **Project item ids, field ids, and option ids** are three distinct opaque strings, all required to set a Status. mill resolves them at bootstrap and caches them; never hardcode one, and never assume you can derive an item id from the issue it wraps.
 - **Session ids** from Claude Code are opaque strings, and the session file behind one may vanish. Any code path that resumes a session must have a fallback that re-runs the stage from scratch.
-- **Mill run ids** are local integers and mean nothing outside this database. Never put one in a GitHub comment as though the user could look it up.
+- **mill run ids** are local integers and mean nothing outside this database. Never put one in a GitHub comment as though the user could look it up.
 
 ### Domain vocabulary
 
-Key models, label vocabulary, and operational reference: `docs/reference/mill.md`.
+Key models, the Status and directive vocabulary, and operational reference: `docs/reference/mill.md`.

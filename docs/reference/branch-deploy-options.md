@@ -1,6 +1,6 @@
 # Branch/preview deploys for human + machine validation — options
 
-Research notes, 2026-08-06. **Out of scope for Mill v1**; captured for later.
+Research notes, 2026-08-06. **Out of scope for mill v1**; captured for later.
 
 ## What machine validation needs that human review doesn't
 
@@ -76,12 +76,12 @@ composes with any of the compute options above.
 ## Recommended shape when this comes into scope
 
 **Fly review apps + a Neon branch per PR, driven by a GitHub Actions workflow that
-lives in the target repo — not in Mill.**
+lives in the target repo — not in mill.**
 
-Mill's entire involvement stays one field: read the deployment URL off the PR and pass
+mill's entire involvement stays one field: read the deployment URL off the PR and pass
 it to the browser-verify stage as `MILL_PREVIEW_URL`. If it's absent, verify degrades to
 running the app locally in the worktree. That single seam is why this is safely
-deferrable — nothing in Mill's design has to change to adopt it later.
+deferrable — nothing in mill's design has to change to adopt it later.
 
 Two guardrails worth writing into `.mill.yml` when the time comes:
 - **Auth bypass** — a preview-only token or seeded test user the verify stage can use.
