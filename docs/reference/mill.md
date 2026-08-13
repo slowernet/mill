@@ -11,6 +11,8 @@ First-time setup is a separate runbook: [setup.md](setup.md).
 - [The board](#the-board)
 - [Releasing work](#releasing-work)
 - [Key models](#key-models)
+- [Identifier types](#identifier-types)
+- [Query optimization](#query-optimization)
 
 ## The board
 
@@ -75,3 +77,35 @@ hotfix shape will block and ask you to think it through.
 - **Verdict**: JSON written by every attempt to `~/.mill/runs/<run-id>/verdict-<stage>-<n>.json`, outside the repo. Must carry the stage, attempt, and nonce mill passed in; status is `ok`, `blocked`, or `failed`.
 - **Objection**: a reviewer finding with a severity. `high` or `critical` re-runs the reviewed stage; lower severities land in the PR body.
 - **Event**: a comment occurrence the poller has seen, keyed on node id, with a retry count and a terminal `dead` state. Board status is *not* an event — it is reconciled as state.
+
+## Identifier types
+
+GitHub numbers and GitHub ids are different things, and neither is globally unique in the way you
+expect.
+
+- **Issue and PR numbers** are integers, unique only within a repository. `#42` is meaningless
+  without a repo. Always carry `repo_id` alongside.
+- **Node ids** (`gh_node_id`) are opaque strings — never parse, order, or do arithmetic on them.
+  They are the dedupe key for comment events precisely because they are stable and unique across
+  the whole of GitHub.
+- **Project item ids, field ids, and option ids** are three distinct opaque strings, all required
+  to set a Status. mill resolves them at bootstrap and caches them; never hardcode one, and never
+  assume you can derive an item id from the issue it wraps.
+- **Session ids** from Claude Code are opaque strings, and the session file behind one may vanish.
+  Any code path that resumes a session must have a fallback that re-runs the stage from scratch.
+- **mill run ids** are local integers and mean nothing outside this database. Never put one in a
+  GitHub comment as though the reader could look it up.
+
+## Query optimization
+
+When moving filtering from Ruby into a query — SQL, or a `gh` API search:
+
+- **Ruby defaults mask missing data.** Accessors like `row[:field] || 'default'` make a NULL
+  column or an absent JSON key behave as if it has a value. A query filtering on that column skips
+  those rows entirely. Verify the field is populated on every row before depending on it
+  server-side.
+- **Trace all write paths.** Before depending on a field in a query, grep for every insert and
+  update touching that table to confirm the field is always set. Backfill in a migration if it is
+  not.
+- **`gh` search is not a database.** GitHub's search index lags and is rate-limited. Filter on
+  values you fetched directly, not on search results, when correctness matters.

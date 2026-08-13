@@ -1,5 +1,10 @@
 # Agent instructions
 
+**This file states what to do. The design doc states why.** It is loaded into every session, so
+every line costs tokens forever — keep it to rules an agent needs in the first five seconds. If
+you find yourself explaining a mechanism here, it belongs in
+`docs/superpowers/specs/2026-08-06-software-factory-design.md` instead.
+
 ## CRITICAL: Questions vs. actions
 
 **STOP and ASK before making changes based on questions.**
@@ -52,15 +57,16 @@ When you have a reasoned counterargument, state it clearly before accepting my d
 
 ## Safety invariants
 
-Rules about the code you write here. Breaking one is a bug regardless of what a task appears to ask for. mill's *runtime* requirements — the containment layers, who may trigger a run, the spend ceilings — live in the design doc's Ingress, Containment, and Back-pressure sections; do not restate them here.
+Prohibitions only. Breaking one is a bug regardless of what a task appears to ask for. The reasoning, and mill's runtime requirements, live in the design doc — do not restate them here.
 
 - Never write a call to `gh pr merge`. mill does not merge.
-- Never post a comment except through `Mill::Github`. It stamps the marker; a second comment path lets mill trigger itself again.
-- Never add a retry path around the two-attempts-per-stage counter. The design sanctions exactly one reset: when you answer a run that blocked because a stage ran out of attempts. Resuming a session after a stall or a reviewer objection is not a retry — it continues the same attempt or starts attempt 2 within the existing counter.
-- Never signal a bare pid. Stages run in their own process group; signal the group and confirm no descendant survives.
-- Never loosen a permission ruleset in `~/.mill/settings/` or add `--dangerously-skip-permissions` to the argv builder to make a stage work. A stage that needs a new capability needs a reviewed rule, not a bypass.
-- Never bypass or short-circuit verdict validation in `Mill::Claude` — envelope match, artifact path resolution, cost present.
-- Never add a rule to the `PreToolUse` hook and treat a containment gap as closed. The hook guards against model error; it is not the boundary.
+- Never post a comment except through `Mill::Github`.
+- Never add a retry path around the two-attempts-per-stage counter.
+- Never signal a bare pid, and never signal at all without checking the recorded boot time first.
+- Never loosen a permission ruleset in `~/.mill/settings/`, and never add `--dangerously-skip-permissions` to the argv builder.
+- Never remove `--tools` or `--strict-mcp-config` from the argv builder, and never move confinement into an `allow` list — an allow list does not confine.
+- Never bypass or short-circuit verdict validation in `Mill::Claude`.
+- Never add a rule to the `PreToolUse` hook and treat a containment gap as closed.
 
 ---
 
@@ -104,25 +110,14 @@ Rules about the code you write here. Breaking one is a bug regardless of what a 
 
 ### GitHub issue workflow
 
-**GitHub Issues is the canonical location for idea and bug tracking**, and for mill it is also the work queue. Use the `gh` CLI directly.
+**GitHub Issues is the canonical location for idea and bug tracking**, and for mill it is also the work queue. Use the `gh` CLI directly. The queue is a Project Status field, not a label — mill uses no labels. Projects v2 is GraphQL-only, so board reads go through `gh project item-list` or `gh api graphql`, never `gh issue list`.
 
-The queue is a **GitHub Project Status field**, not a label — mill uses no labels at all. Projects v2 is GraphQL-only, so board reads go through `gh project item-list` or `gh api graphql`, not `gh issue list`.
+- `gh project item-list <number> --owner slowernet --format json` — the board
+- `gh issue view 42 --comments` — full detail including the Q&A thread
+- `gh issue develop 42` — create and link a branch; this is how a spec reaches mill
+- `gh issue create --title 'Title' --body-file -` — use `--body-file -` with a heredoc for multi-line bodies rather than escaping into `--body`. Same for `gh issue edit 42 --body-file -`.
 
-**Viewing work:**
-- `gh project item-list <number> --owner slowernet --format json` - the board
-- `gh issue view 42 --comments` - full detail including the Q&A thread
-- `gh issue develop 42` - create and link a branch to an issue; this is how a spec reaches mill
-
-**Creating and updating issues:**
-- `gh issue create --title 'Title' --label 'bug,p1' --body-file -` — use `--body-file -` with a heredoc for multi-line bodies rather than escaping into `--body`
-- `gh issue edit 42 --body-file -` — same pattern for updates
-
-Board statuses and directive fields are in `docs/reference/mill.md`.
-
-**Best practices:**
-- Fetch board state at the start of planning sessions
-- Keep issues focused on single concerns - split if too many line items
-- An issue mill will act on is a spec. mill blocks an underspecified issue, and that costs you a round trip, so write the constraints down the first time.
+Fetch board state at the start of planning sessions. Keep issues to a single concern. An issue mill will act on is a spec — it blocks an underspecified one, and that costs a round trip, so write the constraints down the first time. Status and directive vocabulary: `docs/reference/mill.md`.
 
 ---
 
@@ -193,14 +188,6 @@ Before completing any code changes, proactively check for:
 
 When you notice an inconsistency, mention it and ask if I want it fixed, even if it's outside the immediate task scope.
 
-### Query optimization checks
-
-When moving filtering from Ruby into a query (SQL, or a `gh` API search):
-
-- **Ruby defaults mask missing data**: accessors like `row[:field] || 'default'` make a NULL column or an absent JSON key behave as if it has a value. A query filtering on that column skips those rows entirely. Verify the field is populated on every row before depending on it server-side.
-- **Trace all write paths**: before depending on a field in a query, grep for every insert and update touching that table to confirm the field is always set. Backfill in a migration if it is not.
-- **`gh` search is not a database**: GitHub's search index lags and is rate-limited. Filter on labels and timestamps you fetched directly, not on search results, when correctness matters.
-
 ---
 
 ## Communication style
@@ -214,16 +201,6 @@ When moving filtering from Ruby into a query (SQL, or a `gh` API search):
 
 ## Reference
 
-### Identifier types
+**GitHub numbers and ids are different things, and neither is globally unique.** Issue and PR numbers are per-repo, so always carry `repo_id` alongside. Node ids, project item/field/option ids, and Claude Code session ids are all opaque — never parse, order, or derive one from another. A session file behind a session id may vanish, so any resume path needs a re-run fallback.
 
-**GitHub numbers and GitHub ids are different things, and neither is globally unique in the way you expect.**
-
-- **Issue and PR numbers** are integers, unique only within a repository. `#42` is meaningless without a repo. Always carry `repo_id` alongside.
-- **Node ids** (`gh_node_id`) are opaque strings — never parse, order, or arithmetic them. They are the dedupe key for comment events precisely because they are stable and unique across the whole of GitHub.
-- **Project item ids, field ids, and option ids** are three distinct opaque strings, all required to set a Status. mill resolves them at bootstrap and caches them; never hardcode one, and never assume you can derive an item id from the issue it wraps.
-- **Session ids** from Claude Code are opaque strings, and the session file behind one may vanish. Any code path that resumes a session must have a fallback that re-runs the stage from scratch.
-- **mill run ids** are local integers and mean nothing outside this database. Never put one in a GitHub comment as though the user could look it up.
-
-### Domain vocabulary
-
-Key models, the Status and directive vocabulary, and operational reference: `docs/reference/mill.md`.
+Key models, the Status and directive vocabulary, identifier rules in full, and query-optimization traps: `docs/reference/mill.md`.

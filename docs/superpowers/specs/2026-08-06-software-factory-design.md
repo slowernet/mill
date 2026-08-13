@@ -1,6 +1,6 @@
 # mill — a software factory
 
-Design doc. 2026-08-06, revised three times — see [Revision history](#revision-history).
+Design doc. 2026-08-06, revised four times — see [Revision history](#revision-history).
 
 ## Contents
 
@@ -166,7 +166,24 @@ in a supervising loop that logs the exception and restarts the thread with backo
 `Thread.report_on_exception` stays at its default of true. Each writes a heartbeat, and `GET /`
 reports an error when either goes stale.
 
-**Stack.** Ruby, Roda, Sequel, SQLite, Puma, Minitest.
+**Stack.** Ruby, Roda, Sequel, SQLite, Puma, Minitest — and stdlib for everything else.
+
+Surveyed and deliberately rejected, so it need not be re-argued: a **state machine gem** (AASM,
+Statesman, MicroMachine) — the six run statuses are a case statement, and the stage graph is a
+route with conditional re-entry rather than an FSM, so a DSL would obscure the two-strike and
+rejection rules that are the interesting part; Statesman specifically would duplicate
+`stage_attempts`, which already is the transition log. A **subprocess gem** (`process_executer`)
+— healthy and its `MonitoredPipe` matches mill's tee well, but it documents no process-group
+support and its timeout is elapsed rather than awake time, so it would cover the easy half of
+`Mill::Claude` and split the pgroup lifecycle, awake clock, descendant reap, and boot-epoch check
+across two codebases. **`sys-proctable`** for pid start times and descendant enumeration — last
+released December 2022, and a stale native gem is the wrong dependency for the one path that must
+be correct; `ps` and `pgrep` from the supervisor, which already shells out to git, are enough.
+A **scheduler** and **concurrent-ruby** — mill has two threads and about three timers.
+
+The one open call is **`retriable`** (actively maintained, tiny, randomised exponential backoff)
+against a dozen-line `with_backoff` helper. mill needs backoff in roughly three places. Either is
+defensible; pick one before Plan A rather than growing both.
 
 **Paths.**
 
@@ -306,20 +323,28 @@ knows what to do.
 
 ### Stages, models, and skills
 
-| Stage | Model | Skill invoked | Produces |
-|---|---|---|---|
-| `triage` | Sonnet | none | route, evidence flag, actionability |
-| `plan` | Opus | `superpowers:writing-plans` | `docs/superpowers/plans/<date>-<slug>.md` |
-| `review:plan` | Opus | `adversarial-reviewer` | objections |
-| `diagnose` | Opus | `superpowers:systematic-debugging` | root cause, recorded in the PR body |
-| `implement` | Opus | `superpowers:executing-plans` | code + tests |
-| `implement:fast` | Opus | `superpowers:test-driven-development` | code + tests |
-| `review:code` | Opus | `adversarial-reviewer` | objections |
-| `pr` | Opus | `superpowers:finishing-a-development-branch` | pull request |
-| `push` | Opus | none | pushed commits on an existing PR |
+| Stage | Model | Toolset (`--tools`) | Skill invoked | Produces |
+|---|---|---|---|---|
+| `triage` | Sonnet | `Read,Glob,Grep` | none | route, evidence flag, actionability |
+| `plan` | Opus | `Read,Glob,Grep,Write` | `superpowers:writing-plans` | `docs/superpowers/plans/<date>-<slug>.md` |
+| `review:plan` | Opus | `Read,Glob,Grep` | `adversarial-reviewer` | objections |
+| `diagnose` | Opus | `Read,Glob,Grep,Bash` | `superpowers:systematic-debugging` | root cause, recorded in the PR body |
+| `implement` | Opus | `Read,Glob,Grep,Write,Edit,Bash` | `superpowers:executing-plans` | code + tests |
+| `implement:fast` | Opus | `Read,Glob,Grep,Write,Edit,Bash` | `superpowers:test-driven-development` | code + tests |
+| `review:code` | Opus | `Read,Glob,Grep,Bash` | `adversarial-reviewer` | objections |
+| `pr` | Opus | `Read,Glob,Grep,Bash` | `superpowers:finishing-a-development-branch` | pull request |
+| `push` | Opus | `Read,Bash` | none | pushed commits on an existing PR |
 
 Sonnet for cheap mechanical passes, Opus for judgment and code. No user-facing toggle; you
 change the map by editing config.
+
+The toolset column is the fail-closed half of [Containment](#containment) layer 1, so it is
+deliberately mean. Four stages get no write tool at all, which makes a whole class of deny rule
+unnecessary for them: `review:plan` cannot modify the plan it is reviewing no matter what its
+prompt says. `review:code` and `diagnose` get Bash because they need to run the test suite, and
+that is where the command-level deny rules earn their place. Only `implement`, `implement:fast`,
+and `pr` can both write files and run commands, and those three are where a reviewed ruleset
+matters most.
 
 `implement` and `implement:fast` differ by whether a plan exists — `executing-plans` requires
 one, `test-driven-development` does not. That distinction now tracks the real difference
@@ -421,11 +446,24 @@ file out of the repo means no stage can commit it and no later checkout can rest
 `gh pr list --head <branch>`, which is idempotent, so a crash between `gh pr create` and the
 state write reconciles instead of opening a second PR.
 
-Stages run with `--output-format stream-json`. `Mill::Claude` accumulates `tokens_in` and
-`tokens_out` from per-message `usage` as it tees, persisting a running total so a killed
-attempt retains its partial count. mill tracks tokens across every part of the graph — per
-attempt, per stage, and per run — so it can present historical averages and, eventually,
-cost estimates for per-token billing.
+Stages run with `--output-format stream-json`. `Mill::Claude` accumulates four token counts from
+per-message `usage` as it tees, persisting running totals so a killed attempt retains its partial
+count. mill tracks tokens across every part of the graph — per attempt, per stage, and per run —
+so it can present historical averages and, eventually, cost estimates for per-token billing.
+
+**Record all four counts, not just in and out.** A trivial spike prompt reported `input_tokens: 3`
+against `cache_read_input_tokens: 7182` — cache reads dominated real input by three orders of
+magnitude. Recording only `tokens_in`/`tokens_out` would understate token flow by roughly 99% and
+make any later cost model meaningless, because cached input is priced differently from fresh
+input. The `result` line also carries a `total_cost_usd` figure, which is notional on a
+subscription rather than something you are billed, but is a free input to an estimate model.
+
+**Rate limits are the real ceiling, so record them.** The stream carries a `rate_limit_event`
+message type. On a subscription the binding constraint is not money but throughput, and a stage
+that stalls behind a rate limit looks exactly like a stage that is thinking. `Mill::Claude` stamps
+`rate_limited_at` when it sees one, the stall detector treats a rate-limited attempt as waiting
+rather than wedged, and the UI surfaces it — otherwise mill would kill and resume a healthy stage
+that was only queued behind a limit.
 
 ## Containment
 
@@ -434,15 +472,44 @@ mill **does not** use `--dangerously-skip-permissions`. That flag is
 permission-system concepts, skipping permissions leaves no filesystem confinement for Read,
 Write, or Edit at all. Autonomy comes from an explicit ruleset instead, in four layers.
 
-**1. An allow/deny ruleset per stage, from outside the worktree.** Each stage runs with
-`--settings ~/.mill/settings/<stage>.json` listing the tools and Bash commands that stage
-needs. Claude Code denies anything unmatched rather than prompting, which in headless mode
-means it tells the agent no; the agent adapts or blocks. Fail-closed; a denylist is fail-open.
+**1. A restricted toolset per stage, plus deny rules from outside the worktree.** This layer
+has two mechanisms, and the spike proved they are not interchangeable.
 
-Every stage denies the same things: writes to `.claude/**`, `.mill.yml`,
-`.github/workflows/**`, and `.github/actions/**`; reads of `~/.ssh/**`, `~/.aws/**`,
+`--tools` decides which built-in tools exist at all for a stage. A tool absent from the list
+cannot be called — the agent reports it has no such tool and adapts. **This is the fail-closed
+part**, and it is where most of mill's confinement comes from.
+
+`--settings ~/.mill/settings/<stage>.json` carries **deny** rules that scope paths and commands
+within the tools that remain. Deny rules work, including at command level: `Bash(curl:*)` blocks
+curl while `echo` still runs. **This part is fail-open** — anything not denied is permitted.
+
+An `allow` list does **not** confine. In headless `-p` it is advisory, pre-approving things so
+they skip a prompt; a tool absent from `allow` and absent from `deny` runs anyway, under every
+permission mode. Anyone reading this ruleset should not mistake `allow` for a boundary.
+
+Two consequences follow. First, **strip the toolset as far as each stage allows**, so the
+denylist has less to cover — see the toolset column in
+[Stages, models, and skills](#stages-models-and-skills). Second, the doc's own critique of
+denylists — that one "measures only the bypasses its author imagined" — now applies to part of
+layer 1, not just the `PreToolUse` hook. Tool selection is a boundary; command scoping is a
+best effort.
+
+Every stage denies the same things: `Edit(.claude/**)`, `Edit(.mill.yml)`,
+`Edit(.github/workflows/**)`, and `Edit(.github/actions/**)`; reads of `~/.ssh/**`, `~/.aws/**`,
 `~/.config/gh/**`, and `**/.env*`; and every `gh` subcommand except the narrow set `pr` and
 `push` require.
+
+**Write file denies in the `Edit(...)` form, never `Write(...)`.** Claude Code matches file
+permission checks against `Edit(path)` rules only, and `Edit` rules cover every file-editing
+tool including Write. A `Write(.github/workflows/**)` rule silently does nothing — the spike
+confirmed a workflow file was modified under exactly that rule, and blocked under the `Edit`
+form. Claude Code emits a warning when it sees the wrong form; `mill:doctor` should treat that
+warning as a failure.
+
+**Every stage also runs with `--strict-mcp-config` and no `--mcp-config`.** `--tools` restricts
+built-in tools only; without this flag a stage inherits whatever MCP servers the operator has
+configured. On the machine this was spiked on, that included a Google Drive connector. mill's
+stages need no MCP servers at all.
 
 The settings file lives outside the worktree because `bypassPermissions` permits writes to
 `.claude/` and the settings watcher picks them up — so an agent could disarm its own
@@ -681,8 +748,9 @@ runs           id, repo_id, subject_kind, subject_number, route,
 
 stage_attempts id, run_id, stage, attempt, model, session_id, nonce,
                status, verdict_json, tokens_in, tokens_out,
-               log_path, pid, pgid, last_output_at, stall_recoveries,
-               started_at, finished_at
+               cache_creation_tokens, cache_read_tokens, rate_limited_at,
+               log_path, pid, pgid, pid_started_at, host_boot_at,
+               last_output_at, stall_recoveries, started_at, finished_at
 
 events         id, repo_id, kind, gh_node_id (unique), payload_json,
                attempts, last_error, state, created_at, processed_at
@@ -703,20 +771,25 @@ resume is comment-triggered. SQLite supports the partial unique index this needs
 `processed_at` in the same transaction that inserts the resulting run — otherwise an exception
 raised after mill marks a comment processed drops your answer with no trace.
 
-mill persists `pgid` and `pid` so it can still kill a stage after a restart, and verifies pgid
-plus start time before it signals — never a bare pid, which the OS can recycle.
+mill persists `pgid`, `pid`, `pid_started_at`, and `host_boot_at` when it spawns an attempt.
+Three fields are needed rather than one because pids are recycled: after a reboot they restart
+low, so a stored pgid of `431` may well be alive and belong to a system daemon. `host_boot_at`
+comes from `sysctl -n kern.boottime`; `pid_started_at` from the process table.
 
 The runner writes `heartbeat_at`; at boot and on a timer, mill checks every run marked
-`running`. Three branches:
+`running`. Three branches, evaluated in this order:
 
-- **Process group gone** (machine rebooted, or the stage exited while mill was down): mark the
-  attempt interrupted and re-enter the stage. The session id is still in the database, so
+- **`host_boot_at` differs from the machine's current boot time.** The machine rebooted, so the
+  process is gone for certain. **Signal nothing** — the pgid now belongs to something else. Mark
+  the attempt interrupted and re-enter the stage. The session id is still in the database, so
   attempt 2 can resume it.
-- **Process group alive but no runner thread owns it** (mill restarted, stage kept going): kill
-  the group first, then mark interrupted and re-enter. Two agents in the same worktree is
-  worse than losing partial work.
-- **Process group alive and a runner thread owns it**: leave it alone — this is normal
-  operation.
+- **Same boot, process group alive, and mill did not spawn it this instance.** mill restarted
+  and the stage kept running. Verify `pid_started_at` still matches the live process, then kill
+  the group, mark the attempt interrupted, and re-enter. Two agents in the same worktree is
+  worse than losing partial work. At boot mill has no in-memory registry, so every live group
+  it finds falls here.
+- **Same boot, process group alive, and mill spawned it this instance.** Normal operation —
+  leave it alone. Only the periodic check reaches this branch.
 
 Heartbeat staleness is measured in awake time. Measuring it in wall time would fail every
 healthy run after a night with the lid shut.
@@ -888,6 +961,7 @@ Every row resolves to `blocked` or `failed`. None resolves to silent success.
 | mill restarts mid-stage, process group gone | Marks the attempt interrupted, re-enters without burning a strike; same cap |
 | Machine sleeps mid-stage | Measures the gap, opens a settle window, and holds off heartbeat reaping until it closes |
 | Stage emits nothing for the stall window | Kills the group and resumes the session; costs no strike, capped per attempt |
+| Stage is rate-limited by Claude | Stamps `rate_limited_at`, treats the attempt as waiting rather than wedged, and surfaces it in the UI |
 | Network unreachable inside the settle window | Treats it as transient and logs it, leaving repo health alone |
 | Stale git lock in the worktree or on a `mill/*` ref | Removes it before the attempt; it costs no strike |
 | Descendants survive a kill | Reaps them before it reuses the worktree |
@@ -922,10 +996,22 @@ tokens.
   advancing the continuous clock without advancing the awake clock. Assert that the settle
   window opens, that heartbeat reaping stays suppressed while it is open, and that an attempt
   emitting nothing gets killed and resumed without consuming an attempt.
-- **Permission ruleset** — the layer-1 boundary. Assert that a real `claude -p`, running with
-  the stage's settings file, actually refuses to read `~/.ssh`, to write `.claude/`, and to
-  call `gh api`. The only suite that must run against the real CLI, because it is the only one
-  asserting a boundary rather than logic.
+- **Permission ruleset** — the layer-1 boundary, and the only suite that must run against the
+  real CLI, because it is the only one asserting a boundary rather than logic. Assert against a
+  real `claude -p` running with the stage's argv and settings file:
+  - A tool omitted from `--tools` cannot be called. Probe **behaviourally** — tell the stage to
+    run a command and check that it reports the tool absent. Never ask the agent to enumerate
+    its own tools; the spike showed that self-report is unreliable and contradicts observed
+    behaviour.
+  - `Edit(...)` denies hold: a file under a denied path is not modified. Use a **benign** edit —
+    a request that looks like tampering gets refused on safety grounds before the permission
+    layer is ever reached, which passes for the wrong reason.
+  - Command-level Bash denies hold: a denied command is blocked while a sibling command runs.
+  - `--strict-mcp-config` leaves no MCP tools reachable.
+  - **A regression test against the wrong mental model:** assert that a tool present in neither
+    `allow` nor `deny` still runs. It does, under every permission mode. Anyone who later
+    "fixes" the ruleset by moving confinement from `--tools` into an `allow` list will turn
+    layer 1 off, and this is the test that catches them.
 - **End to end** — one full run against a scratch repo, by hand, not in CI.
 
 **Two rake targets, because one cannot run in CI.**
@@ -1087,12 +1173,34 @@ D, when the kill switch and the log tail exist; before that, it is two unreliabl
 
 ### Spike — the permission model
 
-Not a plan. Throwaway code, standalone, first.
+Not a plan. Throwaway code, standalone, first. **Run on 2026-08-13 against CLI 2.1.223**, and it
+changed the design; the results are folded into [Containment](#containment) and the toolset
+column above.
 
-Verify that when `claude -p` denies a tool call in non-interactive mode it tells the agent so
-rather than hanging, and that a stage cannot write `.claude/` when a `--settings` file outside the
-worktree denies it. Every layer-1 claim in [Containment](#containment) rests on this, and a
-negative result changes the design — so build nothing on top of it until it confirms.
+What held:
+
+- A denied call is reported to the agent, not hung. A stage read an allowed file, refused a
+  denied sibling, explained why, and exited cleanly in 13 seconds.
+- Command-level Bash denies work: `Bash(curl:*)` blocked curl while `echo` ran.
+- `--resume` carries context across a separate process invocation and returns the **same**
+  session id, which is what attempt 2 depends on.
+
+What broke, and changed the design:
+
+- **An `allow` list does not confine.** A tool in neither `allow` nor `deny` ran under every
+  permission mode tried. Layer 1 was rewritten around `--tools`.
+- **`Write(...)` deny rules silently do nothing.** Only `Edit(...)` is matched against file
+  permission checks. A workflow file was modified under a `Write(...)` deny and blocked under
+  the `Edit(...)` form.
+- **MCP servers are inherited.** `--tools` restricts built-ins only; the stage still had the
+  operator's Google Drive connector until `--strict-mcp-config` was passed.
+- **Token accounting needed two more columns.** Cache reads dominated fresh input 7182 to 3.
+
+Two methodology notes for whoever repeats this. Probe behaviourally rather than asking the agent
+what tools it has — its self-report contradicted its own observed behaviour. And keep probe
+requests benign: a request phrased to look like CI tampering was refused on safety grounds before
+the permission layer was reached, which would have passed as a containment success for entirely
+the wrong reason.
 
 ### Plan A — Seams and doctor
 
@@ -1155,6 +1263,17 @@ Evidence deliverable and deep review. Both are the most likely to change once mi
 been used, so planning them now would be guessing.
 
 ## Revision history
+
+**Revision 4 — the spike ran, and layer 1 was wrong.** Containment assumed an `allow` list
+confines a stage. It does not: in headless `-p` an unlisted tool runs anyway, under every
+permission mode. Layer 1 is now `--tools` for fail-closed tool selection plus deny rules for
+best-effort path and command scoping, with a per-stage toolset column making the first half
+concrete. `Write(...)` deny rules turned out to be silently inert — only `Edit(...)` is
+matched — and stages inherited the operator's MCP servers until `--strict-mcp-config`. Token
+accounting grew two cache columns after cache reads outweighed fresh input by three orders of
+magnitude, and rate limits joined the failure taxonomy as the real ceiling on a subscription. The
+boundary suite gained a regression test asserting that an `allow`-only ruleset does *not* confine,
+so nobody re-introduces the original mistake. Dependency survey recorded in the stack note.
 
 **Revision 3 — sleep and wake.** mill runs on a laptop, so sleep is a normal operating condition
 rather than an exception. Sleep kills nothing, so nothing needs saving; what it breaks is open
