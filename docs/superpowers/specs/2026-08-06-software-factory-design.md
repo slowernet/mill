@@ -1,6 +1,6 @@
 # mill — a software factory
 
-Design doc. 2026-08-06, revised four times — see [Revision history](#revision-history).
+Design doc. 2026-08-06, revised five times — see [Revision history](#revision-history).
 
 ## Contents
 
@@ -19,9 +19,11 @@ Design doc. 2026-08-06, revised four times — see [Revision history](#revision-
   - [How mill avoids triggering itself](#how-mill-avoids-triggering-itself)
 - [The stage graph](#the-stage-graph)
   - [Stages, models, and skills](#stages-models-and-skills)
+  - [Skills mill borrows, and skills mill owns](#skills-mill-borrows-and-skills-mill-owns)
   - [Finding the spec](#finding-the-spec)
   - [Stage prompts](#stage-prompts)
 - [The stage contract](#the-stage-contract)
+- [The attempt ledger](#the-attempt-ledger)
 - [Containment](#containment)
 - [How a run blocks, asks, and resumes](#how-a-run-blocks-asks-and-resumes)
 - [Back-pressure](#back-pressure)
@@ -76,7 +78,7 @@ a named skill, and its own permission ruleset:
 triage → plan → review:plan → implement → review:code → pr
 ```
 
-Every stage writes a nonce-stamped verdict. When a reviewer raises a `high` or `critical`
+Every stage ends with a nonce-stamped verdict. When a reviewer raises a `high` or `critical`
 objection, mill re-runs the stage it reviewed. When a stage fails twice, mill stops the line.
 
 **5. mill opens a PR** — code, tests, the plan, and the spec in one diff — and sets Status to
@@ -135,7 +137,7 @@ design session." mill declining to guess is a feature.
    are the durable record. Run state — route, branch, worktree, stage, session id, attempt
    counts — exists only in SQLite and is *not* disposable.
 2. **Silence is never success.** Every attempt must produce a verdict proving it ran: correct
-   stage, correct attempt, correct nonce.
+   stage, correct invocation, correct nonce.
 3. **The line can always stop.** Any stage may emit questions and block rather than guess.
 4. **Fail closed.** An unrecognised tool call, an unmatched verdict, an unprepared repo, or an
    unreachable GitHub all halt. None proceeds on an assumption.
@@ -192,8 +194,8 @@ defensible; pick one before Plan A rather than growing both.
 ~/.mill/settings/<stage>.json                    permission rulesets, outside every worktree
 ~/.mill/secrets/                                 stage token, per-repo env files
 ~/.mill/worktrees/<repo>/<run-id>/               one worktree per run
-~/.mill/runs/<run-id>/verdict-<stage>-<n>.json   verdicts, outside the repo
-~/.mill/logs/<run-id>/<stage>-<n>.jsonl          raw stream-json per attempt
+~/.mill/runs/<run-id>/verdict-<stage>-<invocation>.json   verdicts, written by mill
+~/.mill/logs/<run-id>/<stage>-<invocation>.jsonl          raw stream-json per attempt
 ```
 
 `~/.mill` is `0700`. Verdicts and settings live outside the worktree deliberately: both are
@@ -235,7 +237,16 @@ a repo to prepare it.
 **mill is the sole writer of Status**, so you must disable the board's built-in workflows —
 Projects v2 automation writes Status too. "Item closed → Done" would flip Status out from under
 a `Running` run, leaving the poller blind to a live subprocess; "Auto-add to project" would
-sweep every new issue onto the board. `mill:doctor` asserts they are off.
+sweep every new issue onto the board.
+
+`mill:doctor` should assert they are off, but **it is not yet known whether the Projects v2 API
+exposes whether a built-in workflow is enabled**. Five minutes against the GraphQL schema settles
+it, and that is a gate on Plan A. If the field does not exist, doctor cannot check it directly and
+falls back to two things that are implementable: the setup runbook lists disabling the workflows as
+a step you confirm, and mill notices after the fact — a Status it did not write, changing under a
+run it owns, is reported as board interference rather than silently obeyed. A check the document
+promises but nothing implements is worse than one that admits its limits, because months later you
+re-enable "item closed → Done" and the sentinel that was supposed to catch it was never there.
 
 Field values belong to the project, not the issue, so an item's Status here is independent of
 its status on any other board, and no other project's automation can reach it.
@@ -259,9 +270,25 @@ those inserts**. If a fetch stops partway, the poller writes no cursor.
 |---|---|---|
 | Item `Ready`, no active run | Start a run | the poller, reconciling the board |
 | Comment on a `Blocked` item | Resume the blocked run | comment poll |
-| Comment on a mill PR | Iterate on the branch | comment poll |
+| Comment opening with `mill:` on a mill PR | Iterate on the branch | comment poll |
 | PR review comment | Address the feedback | review-comment poll |
 | Required checks red on a mill PR | Fix the failure | check poll on open mill PRs |
+
+**Two rules stop these from firing on each other.**
+
+**Board Status decides which trigger a comment is.** A blocked run on a PR subject matches two
+rows at once — the item is `Blocked` and it is also a mill PR. Status wins: while an item is
+`Blocked`, every comment on it is an answer, and none of them starts a new run. Without this rule
+your answer would try to start a second run, the uniqueness index would refuse it, the event would
+retry until it died, and the blocked run would sit waiting for an answer that had already arrived.
+
+**A plain PR comment starts nothing.** An iterate run needs a comment whose first line begins
+`mill:` — everything after the marker is the instruction. Ordinary conversation on a mill PR is
+ignored and logged. Without this, "LGTM, merging after lunch" starts a full pipeline that either
+blocks and posts clarifying questions back at your compliment or goes off and implements it, and a
+three-comment discussion spawns three runs. Review comments and red CI need no marker, because
+neither is ambiguous: a review comment is already a request for a change, and a red check is a
+fact.
 
 **PRs are board items too**, which is what gives PR-entry work a run identity — a Dependabot
 PR has no issue, so questions need somewhere to go. `runs` carries `subject_kind`
@@ -310,12 +337,27 @@ artifact pattern, and permission ruleset.
 
 An issue with no spec that triage does not judge fast-shaped blocks with questions.
 
-**Triage defaults to blocking.** It is the only stage with no reviewer, running the cheapest
-model, and its decision determines whether the pipeline runs at all. The prompt tells triage to
+**Triage defaults to blocking.** It has no reviewer, runs the cheapest model, and its decision
+determines whether the pipeline runs at all. The prompt tells triage to
 route to `fast` only when the issue is unambiguously a crash, a lint violation, or a dependency
 bump — one narrow category with no judgment call. Anything uncertain blocks. This is mill's
 general principle ("the line can always stop") made explicit for the one stage where a wrong
 answer has the largest blast radius.
+
+Triage also runs the scope check: a spec that describes several independent subsystems blocks
+here, at Sonnet cost, with a suggestion to split — before an Opus plan stage is spent
+discovering the same thing.
+
+**Scale is steered upstream too.** One spec produces one plan, one run, one pull request, so an
+epic becomes a *sequence* of specs — each independently shippable, each on its own issue and
+branch, released in order. mill does not stack branches: a spec that depends on an unmerged PR
+waits for the merge. There is deliberately no numeric task cap, because task sizes vary too much
+for a count to mean anything; the planner blocks and proposes the split when a decomposition
+would not fit one readable PR or implement's time budget. The size check lives in the spec
+standard (`docs/reference/spec-standard.md`), where it costs seconds, rather than being
+discovered downstream, where an oversized plan fails slowly — implement gets roughly two
+30-minute launches before its strikes run out, so a plan too big for that window burns strikes
+on healthy work.
 
 Routes are keyed on **what the ticket already contains**, not on how large the change looks.
 Size is only a proxy; what determines whether an agent can execute reliably is whether it
@@ -325,14 +367,14 @@ knows what to do.
 
 | Stage | Model | Toolset (`--tools`) | Skill invoked | Produces |
 |---|---|---|---|---|
-| `triage` | Sonnet | `Read,Glob,Grep` | none | route, evidence flag, actionability |
+| `triage` | Sonnet | `Read,Glob,Grep` | none | route, actionability |
 | `plan` | Opus | `Read,Glob,Grep,Write` | `superpowers:writing-plans` | `docs/superpowers/plans/<date>-<slug>.md` |
 | `review:plan` | Opus | `Read,Glob,Grep` | `adversarial-reviewer` | objections |
 | `diagnose` | Opus | `Read,Glob,Grep,Bash` | `superpowers:systematic-debugging` | root cause, recorded in the PR body |
-| `implement` | Opus | `Read,Glob,Grep,Write,Edit,Bash` | `superpowers:executing-plans` | code + tests |
+| `implement` | Opus | `Read,Glob,Grep,Write,Edit,Bash` | `mill:implement` | code + tests |
 | `implement:fast` | Opus | `Read,Glob,Grep,Write,Edit,Bash` | `superpowers:test-driven-development` | code + tests |
 | `review:code` | Opus | `Read,Glob,Grep,Bash` | `adversarial-reviewer` | objections |
-| `pr` | Opus | `Read,Glob,Grep,Bash` | `superpowers:finishing-a-development-branch` | pull request |
+| `pr` | Opus | `Read,Glob,Grep,Bash` | `mill:pr` | pull request |
 | `push` | Opus | `Read,Bash` | none | pushed commits on an existing PR |
 
 Sonnet for cheap mechanical passes, Opus for judgment and code. No user-facing toggle; you
@@ -346,13 +388,99 @@ that is where the command-level deny rules earn their place. Only `implement`, `
 and `pr` can both write files and run commands, and those three are where a reviewed ruleset
 matters most.
 
-`implement` and `implement:fast` differ by whether a plan exists — `executing-plans` requires
-one, `test-driven-development` does not. That distinction now tracks the real difference
+`implement` and `implement:fast` differ by whether a plan exists — `mill:implement` works through
+one, `test-driven-development` does not need one. That distinction tracks the real difference
 rather than a guess about change size.
 
 mill passes every stage its predecessors' verdicts and artifact paths. It passes a reviewer the
 artifact under review plus the diff to date, and passes `review:code` the plan as well, so that
 reviewer can check the code against what the plan promised.
+
+### Skills mill borrows, and skills mill owns
+
+Five stages borrow an existing skill's text unchanged, because the skill does a self-contained job
+that mill has no opinion about: `writing-plans` for `plan`, `systematic-debugging` for `diagnose`,
+and `test-driven-development` for `implement:fast` — all three from Superpowers — plus the personal
+`adversarial-reviewer` for both reviewer stages. Unchanged means the skill file itself: the stage
+prompt wrapped around it may add mill-specific instructions, and the reviewer stages use exactly
+that to add three extra lenses (buildability, simplicity, codebase alignment) without forking the
+skill. The beat-by-beat extraction — what each stage does and which skill each practice comes
+from — is `docs/superpowers/specs/2026-08-18-sdlc-beats.md`.
+
+**Two stages need mill's own skill**, because the Superpowers versions are built to be driven by a
+human sitting in a terminal and they collide with mill's graph rather than fitting inside it.
+
+`implement` was to use `executing-plans`. That skill opens by telling the agent to use
+`subagent-driven-development` instead whenever subagents are available, which in Claude Code they
+are — so the stage would load a skill whose first instruction is to load a different one. It could
+not follow that instruction anyway: dispatching subagents needs a tool `implement`'s toolset
+deliberately withholds. The skill also begins by creating a worktree, which mill already created
+and handed it, and ends by requiring `finishing-a-development-branch`, so `implement` would try to
+open the pull request itself — before `review:code` had ever run. Taking the other fork is worse:
+`subagent-driven-development` carries its own five-round fix loop and its own reviewer, so a single
+mill stage would run a second retry ledger that mill's own ledger cannot see.
+
+`pr` was to use `finishing-a-development-branch`. Its central step presents a menu, and the first
+option on that menu is merging to the base branch locally. mill's first rule is that it never
+merges. The skill also asks the operator to confirm the base branch, and its whole shape — verify,
+present options, execute the human's choice — assumes the human that mill does not have. Nothing
+in mill should hand a stage a menu containing the one action mill forbids and rely on the agent
+declining it.
+
+**What `mill:implement` keeps**, because these are the practices that make the Superpowers
+versions good and none of them need a human:
+
+- **One task at a time, from its own brief.** Exact values — signatures, magic strings, test cases
+  — come from the plan text verbatim, and the stage does not re-read the whole plan for each task.
+- **Test-driven per task**, on the same iron law `test-driven-development` states: no production
+  code without a failing test first, and a test you did not watch fail proves nothing.
+- **Evidence, not assertion.** A task is done when the report carries the covering tests, the
+  command run, and its output. "Tests pass" without the output is the same failure as a stage that
+  produces no verdict.
+- **Self-review before reporting.** Cheap, and it catches the sloppiness that would otherwise cost
+  a whole review stage and a strike.
+- **A commit per task**, which gives mill a recovery map that survives anything the process does.
+- **Stop, don't guess.** A blocker, an unclear instruction, or a plan gap ends the task in
+  questions rather than an improvisation.
+
+**What it drops:** creating a worktree, opening the pull request, dispatching subagents, running
+its own review-and-fix loop, choosing models, and every gate that waits on a human. mill owns all
+of those.
+
+**The plan file is the ledger.** `mill:implement` runs one process across an entire plan, so its
+context can compact halfway through — and an agent that has forgotten which tasks it finished is
+the most expensive failure this shape has. `writing-plans` already emits tasks as checkboxes, so
+`mill:implement` ticks each one off in the plan file in the same commit as the task's work. The
+record is then in git, survives compaction and resume alike, needs no file outside the worktree,
+and lands in the pull request showing exactly what was done.
+
+**mill overrides the header `writing-plans` mandates.** Every plan that skill writes carries a line
+telling its executor to use `subagent-driven-development` or `executing-plans` — so left alone,
+mill's `plan` stage would produce a document instructing mill's `implement` stage to load the two
+skills it must not. The `plan` stage prompt replaces that header with one naming `mill:implement`.
+
+**Open: how a stage receives its skill at all, and where mill's own two live.** `Skill` is itself a
+tool, and no stage's `--tools` list contains it — every list is a subset of `Read`, `Glob`, `Grep`,
+`Write`, `Edit`, and `Bash`. By the spike's own rule, a tool omitted from `--tools` cannot be
+called, so as written no stage can load any skill: not `mill:implement`, and not the four borrowed
+ones either. **Verify this behaviourally before Plan B**, with the same probe methodology the spike
+used.
+
+If it holds, there are two ways out and they trade against each other. Adding `Skill` to every
+toolset is simplest and stays current with upstream, but that tool can load *anything* on the
+machine — including the two skills this section just removed — so the toolset stops bounding what
+instructions a stage can pull in. Baking the skill text into the prompt keeps the toolsets as tight
+as they are, makes what a stage was told exactly reproducible from mill's own files, and costs
+prompt size plus the work of tracking upstream changes by hand.
+
+Where mill's own text lives follows from that choice, with one constraint either way: it must sit
+outside every worktree, for the same reason the permission rulesets do — a stage must not be able
+to edit the instructions it runs under. It also cannot live under `~/.mill`, which is now denied to
+stages for reads. A plugin directory inside the mill repo satisfies both, is version-controlled and
+reviewed alongside the code, and makes real the `mill:` prefix this document already uses. mill's
+own skills should be self-contained in a single `SKILL.md` regardless, rather than the multi-file
+shape Superpowers uses, since a stage reading a skill's supporting files is a permission question
+mill does not need to have.
 
 ### Finding the spec
 
@@ -379,42 +507,57 @@ the plan, and the code together.
 
 mill owns a thin prompt per stage that invokes its skill explicitly by name, so Claude Code
 never has to guess which skill to load — the quickstart warns about that guessing. mill also
-ships `mill-headless`, loaded by every stage, which redefines the one interactive gate the
-remaining skills assume: where a skill would ask you and wait, it writes the questions into the
+ships `mill-headless`, loaded by every stage, which redefines every interactive gate the
+borrowed skills assume: where a skill would ask you and wait, it writes the question into the
 verdict and stops.
 
 That job is much smaller than it was. `brainstorming`'s per-section approval gates were the
-hardest thing to simulate headlessly, and moving design upstream deletes the need entirely.
-`writing-plans`' single gate — "any questions or critique of the design?" — maps onto
-block-and-ask directly.
+hardest thing to simulate headlessly, and moving design upstream deletes the need entirely. What
+remains is a handful of ordinary questions: `writing-plans` asking for critique of the design,
+`test-driven-development` asking before it skips tests for generated or throwaway code, and
+`systematic-debugging` asking when it cannot establish a root cause. Each maps onto block-and-ask
+directly. The two skills whose gates could not be mapped this way — one that hands the operator an
+integration menu, one that asks which of two executors should run — are the two mill replaced with
+its own; see [Skills mill borrows, and skills mill owns](#skills-mill-borrows-and-skills-mill-owns).
 
 The stage prompt owns the verdict envelope; `mill-headless` owns what goes in `questions`.
 
 ## The stage contract
 
-Every attempt is one `claude -p` subprocess in its own process group, writing a verdict to a
-path mill passes in. Attempt 1 of a stage is always a fresh session. Attempt 2 — whether
-triggered by a failure, a crash, or a reviewer's objection — resumes the session from attempt 1
-with `claude --resume <session-id>`, so the agent remembers its own work. The one exception is a
-verdict that failed validation: mill has no trustworthy account of what happened, so it starts a
-fresh session. If `--resume` fails for any reason, mill falls back to a fresh session with the
-prior context appended, and that fallback is what consumes the attempt.
+Every attempt is one `claude -p` subprocess in its own process group. The first launch of a stage
+is always a fresh session. A relaunch — whether triggered by a failure, a crash, or a reviewer's
+objection — resumes the session with `claude --resume <session-id>`, so the agent remembers its own
+work. The one exception is a verdict that failed validation: mill has no trustworthy account of
+what happened, so it starts a fresh session. If `--resume` fails for any reason, mill falls back to
+a fresh session with the prior context appended. [The attempt ledger](#the-attempt-ledger) says
+what each of those endings costs.
 
-The verdict path:
+**The verdict is the stage's last message, not a file it writes.** Stages run with
+`--output-format stream-json`, `Mill::Claude` already parses that stream, and the verdict is the
+final structured message on it. mill validates that message and then writes it itself to
 
 ```
-~/.mill/runs/<run-id>/verdict-<stage>-<attempt>.json
+~/.mill/runs/<run-id>/verdict-<stage>-<invocation>.json
 ```
+
+so a crashed run is still readable afterwards. The agent never touches that path.
+
+The first draft had the agent write the file. That made the toolset table and this contract
+contradict each other: `triage` and `review:plan` hold only `Read`, `Glob`, and `Grep`, so neither
+can create a file, and every route begins with `triage`. It also forced a hole in containment,
+because a stage that can write into `~/.mill` can write to its own permission ruleset there. Moving
+the verdict onto the stream closes both at once — no stage needs a write path outside the worktree,
+and mill can deny `~/.mill` outright. The reason the verdict lives outside the repo is unchanged:
+mill is the only writer, so no stage can commit a verdict and no later checkout can restore one.
 
 ```json
 {
   "stage": "plan",
-  "attempt": 1,
+  "invocation": 1,
   "nonce": "8f3c1a…",
   "status": "ok" | "blocked" | "failed",
   "artifact": "docs/superpowers/plans/2026-08-06-foo.md",
   "route": "plan" | "fast" | null,
-  "evidence_required": true,
   "questions": ["Should deleted users keep their comments?"],
   "objections": [{ "severity": "critical|high|medium|low", "claim": "…", "notes": "…" }],
   "summary": "one paragraph for the log and the PR body"
@@ -423,8 +566,9 @@ The verdict path:
 
 mill validates before accepting:
 
-- The file must exist, and `stage`, `attempt`, and `nonce` must match this spawn. mill unlinks
-  it first and generates a fresh nonce each time.
+- A stage that ends without a final structured message has failed. Silence is never success.
+- `stage`, `invocation`, and `nonce` must match this spawn. mill generates a fresh nonce each
+  time and passes it in the prompt.
 - `artifact`, if present, must resolve inside the worktree, must not traverse a symlink, must
   match the stage's declared pattern, and must exist and be non-empty.
 - `questions` must be non-empty iff `status` is `blocked`.
@@ -432,24 +576,32 @@ mill validates before accepting:
   `claim` stays short for mill's own decision logic; `notes` is what the coding agent and you
   both read. mill posts each objection's notes as a PR comment through `Mill::Github` once the
   PR exists.
-- mill accepts `route` and `evidence_required` only from `triage`.
+- mill accepts `route` only from `triage`. The `Evidence` directive is the board's alone; see
+  [Evidence requirement](#evidence-requirement).
 
-mill fails the attempt on any violation.
+mill fails the attempt on any violation, and a failed validation is one of the endings that costs
+a strike.
 
-The first draft used one fixed path, reused by every stage and never cleared. Two independent
+The first draft had every stage write to one fixed path, reused and never cleared. Two independent
 reviewers found the consequence: when a stage died without writing, mill read its predecessor's
 `{"status":"ok"}` and passed it, so a crashed adversarial reviewer looked as though it had
-approved the code. The nonce makes a stale or replayed verdict unrepresentable, and keeping the
-file out of the repo means no stage can commit it and no later checkout can restore it.
+approved the code. The nonce is what makes that unrepresentable, and it does that work whether the
+verdict arrives as a file or as a message — a stage cannot forge a nonce it was never given, and
+cannot replay one from a previous launch.
+
+The trade this makes: the stage's prompt must demand the verdict as the last thing it emits, and a
+stage that adds a closing paragraph after its JSON fails validation. That is a loud, immediate
+failure in the first minute of the first run rather than a quiet one months in, which is the right
+way round.
 
 `pr_number` is deliberately not in the verdict. mill recovers it with
 `gh pr list --head <branch>`, which is idempotent, so a crash between `gh pr create` and the
 state write reconciles instead of opening a second PR.
 
-Stages run with `--output-format stream-json`. `Mill::Claude` accumulates four token counts from
-per-message `usage` as it tees, persisting running totals so a killed attempt retains its partial
-count. mill tracks tokens across every part of the graph — per attempt, per stage, and per run —
-so it can present historical averages and, eventually, cost estimates for per-token billing.
+`Mill::Claude` accumulates four token counts from per-message `usage` as it tees, persisting
+running totals so a killed attempt retains its partial count. mill tracks tokens across every part
+of the graph — per attempt, per stage, and per run — so it can present historical averages and,
+eventually, cost estimates for per-token billing.
 
 **Record all four counts, not just in and out.** A trivial spike prompt reported `input_tokens: 3`
 against `cache_read_input_tokens: 7182` — cache reads dominated real input by three orders of
@@ -461,9 +613,79 @@ subscription rather than something you are billed, but is a free input to an est
 **Rate limits are the real ceiling, so record them.** The stream carries a `rate_limit_event`
 message type. On a subscription the binding constraint is not money but throughput, and a stage
 that stalls behind a rate limit looks exactly like a stage that is thinking. `Mill::Claude` stamps
-`rate_limited_at` when it sees one, the stall detector treats a rate-limited attempt as waiting
-rather than wedged, and the UI surfaces it — otherwise mill would kill and resume a healthy stage
-that was only queued behind a limit.
+`rate_limited_at` when it sees one, both the stall detector and the per-launch clock treat a
+rate-limited attempt as waiting rather than wedged, and the UI surfaces it — otherwise mill would
+kill a healthy stage that was only queued behind a limit.
+
+## The attempt ledger
+
+Every recovery path in mill ends here. This section is the single definition of what an attempt is
+and who pays for one, because the 2026-08-13 review found the same hole from six directions: the
+rules lived in fragments that disagreed, and the fragments are the control plane for the whole
+pipeline.
+
+**mill counts two separate things.**
+
+**The invocation number** counts how many times mill has launched a stage during a run. It goes up
+on every single launch, with no exceptions. It names the log file and the verdict file, and it is
+the number stamped in the verdict envelope, so no two launches of one stage can be confused for
+each other or overwrite each other's record.
+
+**The strike count** is the two-strikes rule. It goes up only when the stage's own work was judged
+bad. At two strikes the run blocks.
+
+Keeping them apart is what makes the ordinary case expressible at all. `review:code` crashes,
+gets relaunched, and finds a serious problem; `implement` fixes it; the code now has to be
+reviewed again. Under one number the reviewer had already spent both its attempts and mill would
+block a perfectly healthy run — and two clean reviews would both call themselves attempt 1 and
+write to the same place. Under two numbers the reviewer is on invocation 3 with one strike, which
+is exactly the truth.
+
+**What each ending costs:**
+
+| How the launch ended | Invocation | Strike |
+|---|---|---|
+| Stage reported `failed` | +1 | +1 |
+| Stage crashed, or exited non-zero | +1 | +1 |
+| No verdict, or one that failed validation | +1 | +1 |
+| Artifact missing, empty, outside the worktree, or off-pattern | +1 | +1 |
+| Reviewer raised a `high` or `critical` objection | +1 to the reviewed stage | +1 to the reviewed stage |
+| Stage reported `blocked` with questions | +1 | none |
+| Reviewer finished and raised nothing serious | +1 | none |
+| Stall recovery killed and resumed it | +1 | none |
+| `--resume` failed, so mill started fresh with the context appended | +1 | none |
+| mill restarted and interrupted it | +1 | none |
+| A stale git lock was cleared before it ran | n/a | none |
+| It is waiting behind a rate limit | no launch | none |
+
+The rule behind the table: **a strike means the work was wrong. Everything the machine did to a
+stage is free.** A laptop that slept, a socket that died, a lock file left by a SIGKILL, and mill
+restarting are all mill's problems, not the stage's, and charging the stage for them produces
+exactly the failure that destroys trust — a run that dies for a reason you cannot reconstruct from
+the log.
+
+**Asking a question is free.** A stage that stops and asks is working correctly; that is the whole
+point of "the line can always stop". If asking cost a strike, a stage that legitimately needed two
+rounds of questions would exhaust itself by doing its job.
+
+**Free is not unlimited.** Every strike-free path has its own cap, so nothing can loop forever:
+stall recoveries are capped per launch, interruptions are capped per stage, and the total
+invocations for one stage in one run are capped well above any legitimate sequence. Hitting any of
+those caps blocks the run and says which cap it was.
+
+**The reviewer has its own counters.** A reviewer that crashes or returns an unusable verdict is
+the reviewer failing to review, and it strikes the reviewer. A reviewer that finds something
+serious is the reviewer succeeding, and it strikes the stage it reviewed. Two serious objections
+against `implement` means `implement` has used both its strikes and the run blocks. Without a rule
+this explicit, one implementer rejects on any objection at all — and since the reviewer skill
+assumes defects exist, nearly every run blocks — while another treats objections as advisory and
+gates nothing.
+
+**The one sanctioned third strike.** When a stage runs out of strikes, mill blocks and asks. If
+you answer, mill resets that stage's strike count to zero and records that it did so for that
+stage. Each stage may be reset once per run, so a run is never trapped by a reset it spent on some
+earlier stage. If a stage runs out a second time, mill sets Status to `Failed` and stops. This is
+the only path to a third strike, and it requires a human.
 
 ## Containment
 
@@ -495,9 +717,23 @@ layer 1, not just the `PreToolUse` hook. Tool selection is a boundary; command s
 best effort.
 
 Every stage denies the same things: `Edit(.claude/**)`, `Edit(.mill.yml)`,
-`Edit(.github/workflows/**)`, and `Edit(.github/actions/**)`; reads of `~/.ssh/**`, `~/.aws/**`,
-`~/.config/gh/**`, and `**/.env*`; and every `gh` subcommand except the narrow set `pr` and
-`push` require.
+`Edit(.github/workflows/**)`, and `Edit(.github/actions/**)`; **both reads and edits of
+`~/.mill/**`**; reads of `~/.ssh/**`, `~/.aws/**`, `~/.config/gh/**`, `**/.env`, and `**/.env.*`;
+and every `gh` subcommand except the narrow set `pr` and `push` require.
+
+**`~/.mill` is denied whole, in both directions.** No stage has any business there: the verdict
+travels on the stream and mill writes it, so nothing a stage does needs that directory. Denying it
+whole is the only version of this rule that is easy to state and easy to test, and it covers three
+things at once — the stage token and per-repo secrets under `secrets/`, every other run's verdicts
+and the state database, and, most importantly, the stage's own permission ruleset under
+`settings/`. The settings file was moved out of the worktree precisely because an agent that can
+write its own rules can disarm itself mid-session; leaving the new location writable would have
+moved the path the disarm uses rather than closing it.
+
+**Two globs, not one, for env files.** `**/.env*` matches `.env` and `.env.local` but not
+`ownerB-repoB.env`, which is what mill's own secrets files are called — a hole that only closes
+because `~/.mill/**` is now denied outright, and the pair of globs is what covers repo-side env
+files with names of both shapes.
 
 **Write file denies in the `Edit(...)` form, never `Write(...)`.** Claude Code matches file
 permission checks against `Edit(path)` rules only, and `Edit` rules cover every file-editing
@@ -554,56 +790,75 @@ sets Status to `Blocked`, and halts. You reply in a comment, and that comment tr
 resume.
 
 mill resumes with `claude --resume <session-id>` and injects your answers. This is the same
-resume mechanism used for attempt 2 after a failure or a reviewer objection — the only
+resume mechanism used for a relaunch after a failure or a reviewer objection — the only
 difference is what gets injected. Verified: `--resume` returns the *same* session id (a new one
 requires `--fork-session`), and a transcript whose last record is a `tool_use` with no matching
 `tool_result` — the state a SIGKILL produces — resumes successfully, because the CLI repairs
 the dangling call. If `--resume` fails for any reason, mill re-runs the stage from scratch with
-the full context appended, and that re-run consumes an attempt.
+the full context appended; that costs an invocation and no strike.
 
-A run that blocks because a stage **ran out of attempts** differs from one that blocks on a
-question: when you answer, mill resets that stage's counter to zero, once, and records on the
-run that it did. If the same stage runs out again, mill sets Status to `Failed` and stops. This
-is the one sanctioned path to a third attempt, and it requires a human.
+**Some blocks happen before any stage has run**, and those resume differently. An unprepared repo,
+a missing secrets file, more than one spec on the branch, or a branch already checked out
+somewhere else all block the item before mill has launched anything, so there is no session to
+resume. When you answer one of those, mill re-checks the condition and, if it now passes, starts
+the run from the top of the graph. Nothing was lost, because nothing had happened yet.
+
+A run that blocks because a stage **ran out of strikes** differs again: answering resets that
+stage's strike count, under the rule in [The attempt ledger](#the-attempt-ledger).
 
 ## Back-pressure
 
-**Two attempts per stage, then block.** When a stage fails, crashes, times out, or a reviewer
-rejects it, mill resumes the session from attempt 1 with the failure or the reviewer's notes
-injected. The agent wakes up remembering its own work and reads what went wrong. If the resumed
-attempt fails too, mill posts both attempts and blocks. The one exception: when the verdict
-itself was untrustworthy (failed validation), mill starts a fresh session instead of resuming,
-because there is no reliable account of what the first attempt did.
+**Two strikes per stage, then block.** When a stage fails, crashes, times out, or a reviewer
+rejects it, mill resumes the session with the failure or the reviewer's notes injected. The agent
+wakes up remembering its own work and reads what went wrong. If that goes badly too, mill posts
+both and blocks. The one exception: when the verdict itself was untrustworthy, mill starts a fresh
+session instead of resuming, because there is no reliable account of what the first launch did.
+[The attempt ledger](#the-attempt-ledger) is the full accounting.
 
 **What counts as rejection.** A reviewer returns `status: ok` with `objections`; it does not
 fail. mill re-runs the reviewed stage iff any objection is `high` or `critical`, and records
-lower severities in the PR body. Without a rule this explicit, one implementer rejects on any
-objection — and since the reviewer skill assumes defects exist, nearly every run blocks — while
-another treats objections as advisory and gates nothing.
-
-**Whose counter goes up.** A successful review that produces objections costs no attempt to
-anyone — the reviewer did its job. It triggers a re-run of the reviewed stage, and that re-run
-uses the reviewed stage's counter. Two rejections of `implement` means `implement` has used both
-its attempts (the original and the fix-after-review), and mill blocks. The reviewer has its own
-separate counter for its own failures — a crash, a timeout, or a verdict mill could not
-validate. Those are the reviewer failing to review, not the reviewer finding something wrong.
+lower severities in the PR body.
 
 **Limits, config, with these defaults:**
 
 | Limit | Default |
 |---|---|
 | Concurrent runs | 3 |
-| Wall clock per attempt | 30 min of awake time |
-| Silence before mill calls a stage wedged | 5 min of awake time |
-| Stall recoveries per attempt | 2 |
+| Working time per launch | 30 min of awake time, excluding rate-limit waits |
+| Silence before mill calls a stage wedged | 5 min of awake time, excluding time inside a running command |
+| Ceiling on any single command | 45 min of awake time |
+| Stall recoveries per launch | 2 |
+| Interruptions per stage | 3 |
+| Invocations per stage per run | 8 |
 | Settle window after a wake | 90 s of awake time |
+| CI fix runs per PR per failing commit | 2 |
 | Runs per subject per 24h | 6 |
 
-The per-attempt clock uses `Process::CLOCK_UPTIME_RAW`, which does not advance during sleep.
-`CLOCK_MONOTONIC` and wall clock both count sleep on Darwin, so closing the lid mid-stage
-would otherwise reap a healthy attempt as a timeout and charge it a strike — twice, on the
-only deployment target mill supports. [Sleep and wake](#sleep-and-wake) extends that reasoning
-to every other deadline mill keeps.
+**A quiet stage is not necessarily a stuck stage.** A stage running a six-minute test suite emits
+nothing at all while the suite runs, which looks identical to a stage frozen on a dead socket. The
+five-minute silence window would kill it, kill it again on the resumed launch, and block the run —
+so every repo with a slow suite would break at `implement` and `review:code` permanently, and the
+detector meant to catch wedged stages would be reliably killing healthy ones instead.
+
+The stream distinguishes them. A stage announces a command before it runs it and reports the
+result when it finishes, so mill knows whether a command is outstanding. While one is, the silence
+window is suspended and the per-command ceiling applies instead; with no command outstanding, five
+minutes of silence still means wedged. **This needs one behavioural check during Plan A**: confirm
+the tee sees the command announced as it starts, not only when it completes. If it does not, the
+silence window has to be raised to the per-command ceiling for every stage holding `Bash`, and the
+detector gets much weaker for those stages.
+
+**A rate-limited stage is waiting, not working.** On a subscription the rate limit is the real
+ceiling, and a stage queued behind one can sit far longer than half an hour. Both deadlines that
+could kill it — the silence window and the working-time clock — stop counting while
+`rate_limited_at` is current. Otherwise three concurrent Opus runs hitting the limit would time
+each other out, twice each, and fail runs that were never unhealthy.
+
+The per-launch clock uses `Process::CLOCK_UPTIME_RAW`, which is documented not to advance during
+sleep, while `CLOCK_MONOTONIC` and wall clock both count it on Darwin. Closing the lid mid-stage
+would otherwise reap a healthy attempt as a timeout — twice, on the only deployment target mill
+supports. **That difference is an untested claim, and all of [Sleep and wake](#sleep-and-wake)
+rests on it**; see the measurement gate in [Build order](#build-order).
 
 **There is no global daily ceiling, deliberately.** The board bounds what work exists, and mill
 never adds items to it — you do. A global cap would only duplicate the board.
@@ -625,10 +880,10 @@ fan-out. You opt in per item, because it runs roughly six Opus invocations per r
    siblings found, and is told the author is unavailable, so an unstated assumption counts as
    a defect.
 3. **A separate agent deduplicates.** The Runner invokes it because it needs every finding at
-   once and the Runner is deterministic Ruby that cannot judge similarity itself. This agent is
-   not a full stage — it has no nonce and no attempt counter — but mill records its session id
-   and tracks its tokens on the run, so it shows up in the UI and PR body alongside the finders
-   and refuters.
+   once and the Runner is deterministic Ruby that cannot judge similarity itself. Like every agent in the
+   fan-out it returns a nonce-stamped structured message that mill validates, but it is not a
+   full stage and has no strike count of its own. mill records its session id and tracks its
+   tokens on the run, so it shows up in the UI and PR body alongside the finders and refuters.
 4. **A fresh agent tries to refute each finding.** It gets the claim and the artifact but
    **not** the sibling findings, and mill tells it to refute, and to call a finding refuted
    when it cannot decide. On `review:code` it must refute empirically: a finding survives only
@@ -641,10 +896,37 @@ Every agent in the fan-out — the facet selector, each finder, the deduplicator
 refuter — has its tokens recorded on the run. The UI shows a per-agent breakdown so you can see
 where deep review spends its budget and how that changes over time.
 
-**Invariant: no agent may appear in the review path for an artifact it produced.** An author
-never refutes its own work, and no refuter sees what its siblings found — authoring creates a
-stake, and sibling findings anchor. mill gets this structurally, because a stage's session is
-gone by the time anything reviews its artifact.
+**No agent ever reviews something it wrote**, and no refuter sees what its siblings found.
+Authoring gives an agent a stake in the verdict, and reading a sibling's finding anchors the next
+one. mill gets this for free, because a stage's session is gone by the time anything reviews its
+artifact.
+
+**When a sub-agent dies.** The fan-out is not exempt from "silence is never success", so each part
+has a stated answer rather than whatever the implementer happened to code:
+
+- **A finder dies.** Its facet produced nothing, which is not the same as finding nothing. mill
+  relaunches it once; if it dies again, the review stage fails and takes a strike, because a
+  review missing a facet is not the review that was asked for.
+- **The deduplicator dies.** mill relaunches it once, then falls back to treating every finding as
+  distinct. Duplicate objections are noisy but safe; dropping findings is not.
+- **A refuter dies.** Its finding **survives** and becomes an objection. A refuter's job is to
+  knock a finding down, and a refuter that never ran knocked nothing down. Erring the other way
+  would let a crash quietly delete a real defect.
+
+Each sub-agent gets the same per-launch clock and stall detection as a stage. None gets its own
+strike count — they roll up into the review stage's, because the review stage is what mill retries.
+
+**Refuters on `review:code` work in a throwaway copy.** A refuter has to write a failing test to
+confirm a finding, which means it needs write tools that `review:code` deliberately lacks. It gets
+them in a second worktree at the same commit, thrown away afterwards, so nothing it writes can
+reach the run's branch and the no-reviewing-your-own-work rule still holds.
+
+**Deep review has a ceiling.** A fan-out is roughly six Opus invocations per review stage, and it
+can run again after a fix, so one run can spend a lot quietly. mill caps the fan-out at eight
+sub-agents per review stage — the facet selector, at most four finders, the deduplicator, and
+refuters — and when there are more findings than refuter slots it refutes the highest severities
+first and records in the PR body how many went unrefuted. A cap that silently drops work would
+read as "nothing else was found", which is the failure this whole section exists to avoid.
 
 Refuting is not decoration. Reviewing this document, it killed 26 of 62 claims; a stage that
 reported all 62 would have taught you to ignore reviews. It also supplies the rule the ordinary
@@ -661,6 +943,12 @@ before/after sample of real output in `docs/superpowers/samples/<date>-<slug>.md
 summary table inlined in the PR body. It changes no route and adds no stage. mill builds the
 work to production standard either way, so if you merge on the strength of a sample, you are
 merging production-ready code.
+
+**The board field is the only thing that turns this on.** Triage used to be able to request
+evidence in its verdict too, which meant two independent switches with no rule about which won —
+and the guard below, which stops a sample being published from a public repo, keys on *your*
+field. Triage setting the flag could therefore have published a sample the guard was meant to
+gate. Directives are yours; triage decides the route and nothing else.
 
 - **Show the items, do not summarize them.** "Surfaces more diverse content" cannot be judged;
   a table of the actual fifty things it picked can.
@@ -742,27 +1030,49 @@ repos          id, owner, name, local_path, base_branch, ci_workflow,
 runs           id, repo_id, subject_kind, subject_number, route,
                evidence_required, deep_review, branch, spec_path,
                worktree_path, status, current_stage, pgid, heartbeat_at,
-               counter_reset_stage, pr_number, created_at, finished_at
+               strike_resets_json, desired_board_status, board_status_at,
+               pr_number, created_at, finished_at
                -- unique index on (repo_id, subject_kind, subject_number)
-               --   where status in ('queued','running','blocked')
+               --   where status in ('running','blocked')
 
-stage_attempts id, run_id, stage, attempt, model, session_id, nonce,
-               status, verdict_json, tokens_in, tokens_out,
+stage_attempts id, run_id, stage, invocation, model, session_id, nonce,
+               status, strike_charged, verdict_json, tokens_in, tokens_out,
                cache_creation_tokens, cache_read_tokens, rate_limited_at,
                log_path, pid, pgid, pid_started_at, host_boot_at,
-               last_output_at, stall_recoveries, started_at, finished_at
+               last_output_at, pending_tool_at, stall_recoveries,
+               started_at, finished_at
+
+ci_fixes       repo_id, pr_number, head_sha, runs_started
+               -- primary key (repo_id, pr_number, head_sha)
 
 events         id, repo_id, kind, gh_node_id (unique), payload_json,
                attempts, last_error, state, created_at, processed_at
 ```
 
-Run statuses: `queued`, `running`, `blocked`, `done`, `failed`, `killed`.
+Run statuses: `running`, `blocked`, `done`, `failed`, `killed`. There is no `queued` — mill inserts
+a run as `running` in the same transaction that claims the item, so nothing is ever queued, and the
+concurrency cap counts `running` rows only.
 
 `repos` is a cache of prepared state, not a watchlist — no `enabled` column, because nothing is
 enabled or disabled.
 
-mill inserts a run as `running` in the same transaction that claims the item, and the cap counts
-`queued` and `running` together, so it cannot drift.
+`strike_resets_json` is a list of stage names, not one name, because the reset is once *per stage*.
+A single column could record only one, which would silently fail a run whose `plan` was reset
+earlier and whose `implement` later ran out with a reset it was entitled to.
+
+`ci_fixes` is what stops a permanently red PR grinding forever. Each fix run is a whole new run
+with its own fresh counters, so nothing inside a run can bound them; the count has to live outside
+one, keyed to the PR and the commit that is failing. After two, mill comments that it cannot fix
+the failure and stops. A new commit is a new key and gets a fresh budget. Without this the only
+bound is six runs per subject per day, resetting daily — a flaky test or a missing CI secret would
+buy six full Opus pipelines a day indefinitely, each one reporting success.
+
+`desired_board_status` is what mill last decided the board should say, and `board_status_at` when
+it last confirmed it. Setting Status is a network call that can fail, and nothing else re-drives
+it: the poller only ever asks which items are `Ready`. So a run that blocks, finishes, or fails
+while GitHub is briefly unreachable would show `Running` on the board forever, and — because a
+comment's meaning depends on board Status — your answer to its questions would not be recognised
+as an answer. mill retries any run whose board status it has not confirmed.
 
 `blocked` is inside the uniqueness index: a blocked run must keep guarding its subject because
 resume is comment-triggered. SQLite supports the partial unique index this needs.
@@ -776,20 +1086,34 @@ Three fields are needed rather than one because pids are recycled: after a reboo
 low, so a stored pgid of `431` may well be alive and belong to a system daemon. `host_boot_at`
 comes from `sysctl -n kern.boottime`; `pid_started_at` from the process table.
 
-The runner writes `heartbeat_at`; at boot and on a timer, mill checks every run marked
-`running`. Three branches, evaluated in this order:
+The runner writes `heartbeat_at`; at boot and on a timer, mill checks every run marked `running`.
 
-- **`host_boot_at` differs from the machine's current boot time.** The machine rebooted, so the
-  process is gone for certain. **Signal nothing** — the pgid now belongs to something else. Mark
-  the attempt interrupted and re-enter the stage. The session id is still in the database, so
-  attempt 2 can resume it.
-- **Same boot, process group alive, and mill did not spawn it this instance.** mill restarted
-  and the stage kept running. Verify `pid_started_at` still matches the live process, then kill
-  the group, mark the attempt interrupted, and re-enter. Two agents in the same worktree is
-  worse than losing partial work. At boot mill has no in-memory registry, so every live group
-  it finds falls here.
-- **Same boot, process group alive, and mill spawned it this instance.** Normal operation —
+**Nothing gets signalled on the strength of the boot time alone.** `kern.boottime` on Darwin is
+derived from the current clock, so an NTP correction shifts it — and NTP corrects the clock
+routinely on waking from a long sleep. An exact comparison therefore reads a few seconds of clock
+drift as a reboot. mill compares with a tolerance of a few minutes, and, whatever the boot time
+says, **verifies `pid_started_at` against the live process before it signals anything**. Otherwise
+a night with the lid shut ends with mill concluding the machine rebooted, deciding the old process
+is "gone for certain", and starting a second stage in a worktree where the first one just thawed
+and is still working — two agents in one worktree, reached through the branch built to prevent it.
+
+Three branches, evaluated in this order:
+
+- **No process group alive with a matching `pid_started_at`.** Whether the machine rebooted or the
+  process simply died, the attempt is over. Signal nothing, mark it interrupted, re-enter the
+  stage. The session id is still in the database, so the next launch can resume it.
+- **A matching process group is alive, and mill did not spawn it this instance.** mill restarted
+  and the stage kept running. Kill the group, mark the attempt interrupted, and re-enter — two
+  agents in the same worktree is worse than losing partial work. At boot mill has no in-memory
+  registry, so every live group it finds falls here.
+- **A matching process group is alive, and mill spawned it this instance.** Normal operation —
   leave it alone. Only the periodic check reaches this branch.
+
+An interruption costs an invocation and no strike, and is capped per stage. This is the same
+evidence and the same treatment whether mill restarted or a runner thread died underneath a live
+subprocess: the earlier design made those two cases differ, so an identical stale heartbeat with
+no live process failed the run terminally in one telling and re-entered it for free in the other,
+distinguished only by something the data does not record.
 
 Heartbeat staleness is measured in awake time. Measuring it in wall time would fail every
 healthy run after a night with the lid shut.
@@ -801,6 +1125,12 @@ has already rescued that attempt from a dead socket. See [Sleep and wake](#sleep
 older than 14 days, and caps each attempt's log by byte count with a truncation marker. Blocked
 runs are exempt — their worktrees, logs, and verdicts stay until you answer or kill the run.
 `GET /` shows total disk used, and the worktree view (below) lets you clean up manually.
+
+Processed and `dead` rows in `events` are deleted on the same schedule. Nothing else prunes them,
+and a comment sweep that runs for months on an active repo would otherwise leave tens of thousands
+of rows in the database with nothing in the UI explaining where the space went. The sweep itself is
+bounded too: mill fetches comments only for subjects it has reason to care about — items on the
+board and open mill PRs — not every issue in every repo the board touches.
 
 ## Web UI
 
@@ -848,9 +1178,25 @@ reasons the log does not show.
 When mill kills a run, it sets Status to `Failed` and comments why.
 
 **Stale git locks.** Before every attempt and at boot, mill removes age-checked stale `*.lock`
-files under the gitdir for its own worktrees and `refs/heads/mill/*`. A SIGKILL during
-`git commit` leaves an index or ref lock that git never cleans, so attempt 2 would fail
-instantly on the lock and burn the second strike for a reason unrelated to the work.
+files under the gitdir for its own worktrees, and the ref lock for **whichever branch the run
+holds** — not only `refs/heads/mill/*`. A SIGKILL during `git commit` leaves an index or ref lock
+that git never cleans, so the next launch would fail instantly on the lock. Scoping the cleanup to
+`mill/*` would have excluded the primary route entirely, because a `plan` run works on the branch
+`gh issue develop` created and that branch keeps its own name.
+
+**The branch may already be checked out in your clone.** The prescribed workflow leaves it that
+way: you run `gh issue develop`, check the branch out, commit the spec, set Status to `Ready`, and
+walk away with the branch still current in `~/code/<repo>`. `git worktree add` refuses a branch
+that is checked out anywhere, including the clone's own HEAD, so mill's very first claim on its
+main route would fail with a git error that fits no other row in the taxonomy — it is not a stale
+admin entry, and prune does not touch a live checkout.
+
+So the supervisor checks before claiming, against both `git worktree list` and the clone's HEAD.
+If the branch is checked out, mill blocks the item and comments naming the clone and the branch;
+you switch back to your base branch and reply. mill does not switch your clone for you and does
+not force the worktree — two live checkouts of one branch means a commit of yours and a commit of
+a stage's can silently diverge the ref, which is worse than a round trip. The runbook's closing
+step for a design session is to switch off the branch before setting `Ready`.
 
 **Branch and worktree collisions.** mill names the branches it creates
 `mill/<subject>-<run-id>`, so two runs on one subject cannot collide. Adopted branches keep
@@ -863,8 +1209,20 @@ confusing error. The supervisor also prunes stale worktree administrative entrie
 claiming — `git worktree add` refuses a branch whose admin entry survives even after you delete
 its directory.
 
+**A skip is not silent.** A blocked run holds its branch indefinitely by design, so an item waiting
+behind one can wait forever. mill comments once on the waiting subject naming the run that holds
+the branch, and shows the item as waiting in the UI. Otherwise you comment a fix request on an old
+PR, the item is skipped every tick because a `plan` run you never noticed is blocked on the same
+branch, and from your side mill simply ignored you.
+
 One in-process mutex serializes `git worktree add` and ref writes across runners, and retries
-with backoff when it hits lock contention.
+with backoff when it hits lock contention. **That mutex covers mill's own git commands only.**
+Stages run git themselves, in worktrees that share one gitdir, and you use the same clone from your
+terminal — so two stages fetching or committing at once, or you running `git fetch --prune` while a
+stage commits, can still collide on `packed-refs`, the fetch lock, or a ref. mill treats a git
+failure that names a `.lock` file as transient: it clears the age-checked stale lock, waits with
+backoff, and retries the command rather than failing the stage, and only a repeated failure ends
+the launch. `gc.auto=0` closes the garbage-collection case specifically and nothing else.
 
 **mill tears a run down** when the run reaches `done` and the PR is open, and when it reaches
 `failed` or `killed` once mill has kept a compressed diff, the verdicts, and the logs. A
@@ -885,13 +1243,21 @@ time.
 **Measuring the gap.** On Darwin `CLOCK_MONOTONIC` counts time spent asleep and
 `CLOCK_UPTIME_RAW` does not, so the difference between their deltas across a tick is exactly how
 long the machine slept, with no NTP drift mixed in. Both come from `Process.clock_gettime`, so
-this costs nothing beyond the clock the per-attempt timeout already reads.
+this costs nothing beyond the clock the per-launch timeout already reads.
+
+**This is the one claim in the document that nothing has tested**, and this whole section depends
+on it. The two clocks are documented to differ in exactly this way — that is why both exist — but
+documented is not measured, and no spike has run. If they turn out to behave identically on this
+machine, mill cannot detect sleep at all: the settle window never opens, every deadline silently
+counts time asleep, and a night with the lid shut reaps every run in flight as timed out, with the
+defence apparently in place and doing nothing. The measurement is ten lines and needs someone to
+shut a laptop; it is a gate on Plan C in [Build order](#build-order).
 
 Which clock a deadline reads is a correctness question:
 
 | Deadline | Clock |
 |---|---|
-| Wall clock per attempt | awake |
+| Working time per launch | awake |
 | Heartbeat staleness | awake |
 | Silence before mill calls a stage wedged | awake |
 | Settle window after a wake | awake |
@@ -904,18 +1270,26 @@ heartbeat staleness, which would fail every healthy run after a night with the l
 **The stall detector.** The case that matters is a stage mid-stream when the lid closes. On wake
 it holds a half-open socket, and a blocked read on one can hang far longer than the attempt is
 worth: macOS does not send its first TCP keepalive probe for about two hours. The stage does not
-crash. It sits there until the per-attempt clock reaps it as a timeout and charges it a strike.
+crash. It sits there until the per-launch clock reaps it as a timeout and charges it a strike.
 
-`Mill::Claude` already tees stream-json, so it knows when each live attempt last emitted a line.
-mill persists that as `last_output_at`, and when an attempt has emitted nothing for the stall
-window, mill kills the process group and resumes the session with `--resume`. **That recovery
-does not consume an attempt**, for the reason a stale git lock does not: the work did not fail,
-the machine did. mill counts recoveries per attempt in `stall_recoveries` and blocks once an
-attempt hits the cap, so a genuinely silent stage cannot recover forever.
+`Mill::Claude` already tees stream-json, so it knows when each live attempt last emitted a line and
+whether a command is still outstanding. mill persists those as `last_output_at` and
+`pending_tool_at`, and when an attempt has been silent for the window **with no command
+outstanding**, mill kills the process group and resumes the session with `--resume`. **That
+recovery costs no strike**, for the reason a stale git lock does not: the work did not fail, the
+machine did. mill counts recoveries in `stall_recoveries` and blocks once a launch hits the cap, so
+a genuinely silent stage cannot recover forever.
+
+**The recovery stays free even when the resume fails.** SIGKILL mid-stream is the likeliest moment
+for a session transcript to end up unreadable, so the path that starts fresh with the context
+appended is not an edge case here — it is the expected outcome some of the time. Charging a strike
+for it would mean the machine failing takes the blame after all, through the back door, which is
+what the whole rule exists to prevent. It costs an invocation, and the per-stage invocation cap is
+what stops it looping.
 
 Watching for silence rather than watching for sleep means mill needs no special case for waking
 at all. It also catches every other way a stage wedges — a Wi-Fi change, a package manager
-waiting on a prompt `mill-headless` never saw, a stalled API stream — which the per-attempt
+waiting on a prompt `mill-headless` never saw, a stalled API stream — which the per-launch
 clock can only catch at minute 30.
 
 **The settle window.** When the clocks show that mill slept, the supervisor stops claiming, the
@@ -944,38 +1318,51 @@ before you shut the lid means mill has nothing in flight to recover.
 
 Every row resolves to `blocked` or `failed`. None resolves to silent success.
 
-| Failure | What mill does |
-|---|---|
-| Stage returns `blocked` | Posts the questions to the subject, sets Status `Blocked`, stops, and resumes when you reply |
-| Stage returns `failed`, crashes, or exits non-zero | Resumes the session with the failure injected; if the resumed attempt also fails, posts both and blocks |
-| Verdict missing, malformed, or envelope mismatch | Fails the attempt; attempt 2 starts a fresh session because mill cannot trust the old one |
-| Artifact missing, empty, outside the worktree, or off-pattern | Fails the attempt |
-| Reviewer returns a `high` or `critical` objection | Resumes the reviewed stage's session with the reviewer's notes injected; blocks if that happens twice. Posts the notes as a PR comment once the PR exists |
-| Issue has no linked branch, or the branch adds no spec | Routes to `fast` if triage judges it hotfix-shaped, otherwise blocks |
-| Linked branch adds more than one spec file | Blocks and asks which one is the spec |
-| Attempt exceeds 30 min awake time | Kills the group and fails the attempt; the two-strike rule applies |
-| Run exceeds the daily-run limit | Blocks and reports token usage to date |
-| Repo unprepared or a prerequisite missing | Blocks that item, naming what is missing |
-| Required checks red on a mill PR | Starts a new attempt on the same branch, twice at most, then blocks |
-| mill restarts mid-stage, process group alive | Kills the orphaned group, marks the attempt interrupted, re-enters without burning a strike; blocks after 3 interruptions on one stage |
-| mill restarts mid-stage, process group gone | Marks the attempt interrupted, re-enters without burning a strike; same cap |
-| Machine sleeps mid-stage | Measures the gap, opens a settle window, and holds off heartbeat reaping until it closes |
-| Stage emits nothing for the stall window | Kills the group and resumes the session; costs no strike, capped per attempt |
-| Stage is rate-limited by Claude | Stamps `rate_limited_at`, treats the attempt as waiting rather than wedged, and surfaces it in the UI |
-| Network unreachable inside the settle window | Treats it as transient and logs it, leaving repo health alone |
-| Stale git lock in the worktree or on a `mill/*` ref | Removes it before the attempt; it costs no strike |
-| Descendants survive a kill | Reaps them before it reuses the worktree |
-| Another active run already holds the branch | Skips the item this tick and retries later |
-| Branch or worktree admin entry already exists | Prunes it before claiming; blocks if it cannot |
-| Worktree missing or conflicted | Aborts, blocks, and keeps the diff |
-| Run heartbeat stale in awake time and process group gone | Fails the run |
-| Comment from a non-collaborator | Ignores it and logs it |
-| Handling a comment event raises | Increments `events.attempts` and retries, marking it `dead` after the cap |
-| Poller hits an auth failure or a 404 | Marks the repo unhealthy and surfaces it, distinct from rate limiting |
-| GitHub rate-limits `gh` | Backs off to a ceiling and leaves the cursor alone, so it loses nothing |
-| Poller or supervisor thread raises | Logs it, restarts the thread with backoff, and surfaces its health |
-| Two runs on one subject | The unique partial index refuses the second |
-| Disk full | The supervisor stops claiming and surfaces it |
+| Failure | What mill does | Strike |
+|---|---|---|
+| Stage returns `blocked` | Posts the questions to the subject, sets Status `Blocked`, stops, and resumes when you reply | no |
+| Stage returns `failed`, crashes, or exits non-zero | Resumes the session with the failure injected; if that goes badly too, posts both and blocks | yes |
+| Verdict missing, malformed, or envelope mismatch | Fails the attempt; the next launch starts a fresh session because mill cannot trust the old one | yes |
+| Artifact missing, empty, outside the worktree, or off-pattern | Fails the attempt | yes |
+| Reviewer returns a `high` or `critical` objection | Resumes the reviewed stage's session with the reviewer's notes injected; blocks if that happens twice. Posts the notes as a PR comment once the PR exists | yes, against the reviewed stage |
+| Reviewer itself crashes or returns an unusable verdict | Relaunches the reviewer | yes, against the reviewer |
+| Deep review finder dies twice | Fails the review stage — a review missing a facet is not the review that was asked for | yes |
+| Deep review deduplicator dies twice | Treats every finding as distinct and continues | no |
+| Deep review refuter dies | The finding survives and becomes an objection | no |
+| Issue has no linked branch, or the branch adds no spec | Routes to `fast` if triage judges it hotfix-shaped, otherwise blocks | no |
+| Linked branch adds more than one spec file | Blocks and asks which one is the spec | no |
+| Spec describes several independent subsystems | Triage blocks and suggests splitting it | no |
+| Plan would exceed one readable PR or implement's time budget | The planner blocks and proposes a sequence of smaller specs | no |
+| Branch is checked out in your clone | Blocks the item, naming the clone and the branch | no |
+| Launch exceeds its working-time cap | Kills the group and fails the attempt | yes |
+| Stage emits nothing for the silence window, no command outstanding | Kills the group and resumes the session; capped per launch | no |
+| A single command exceeds the per-command ceiling | Kills the group and fails the attempt | yes |
+| Stage is rate-limited by Claude | Stamps `rate_limited_at`; both the silence window and the working-time clock stop counting, and the UI surfaces it | no |
+| Run exceeds the daily-run limit | Blocks and reports token usage to date | n/a |
+| Required checks red on a mill PR | Starts a fix run, at most twice per failing commit, then comments that it cannot fix it and stops | n/a |
+| Repo unprepared or a prerequisite missing | Blocks that item, naming what is missing; resumes from the top of the graph when you fix it | no |
+| mill restarts mid-stage, or a runner thread dies, process group alive | Verifies `pid_started_at`, kills the orphaned group, marks the attempt interrupted, and re-enters; blocks after 3 interruptions on one stage | no |
+| Same, process group gone | Marks the attempt interrupted and re-enters; same cap | no |
+| Boot time differs from the recorded one | Signals nothing on that evidence alone — compares with tolerance and verifies `pid_started_at` first, because an NTP step moves `kern.boottime` | no |
+| Machine sleeps mid-stage | Measures the gap, opens a settle window, and holds off heartbeat reaping until it closes | no |
+| Network unreachable inside the settle window | Treats it as transient and logs it, leaving repo health alone | no |
+| Stale git lock in the worktree or on the run's branch ref | Removes it before the attempt | no |
+| A git command fails on a lock held by another stage or by you | Clears the stale lock, backs off, and retries the command; only a repeated failure ends the launch | no |
+| Descendants survive a kill | Reaps them before it reuses the worktree | n/a |
+| Another active run already holds the branch | Skips the item, comments once naming the run that holds it, and shows it waiting in the UI | n/a |
+| Branch or worktree admin entry already exists | Prunes it before claiming; blocks if it cannot | no |
+| Worktree missing or conflicted | Aborts, blocks, and keeps the diff | no |
+| Comment on a `Blocked` item | Always read as an answer, never as a new trigger | n/a |
+| Plain comment on a mill PR without the `mill:` marker | Ignores it and logs it | n/a |
+| Comment from a non-collaborator | Ignores it and logs it | n/a |
+| Handling a comment event raises | Increments `events.attempts` and retries, marking it `dead` after the cap | n/a |
+| Writing Status to the board fails | Leaves `desired_board_status` unconfirmed and retries until it lands | n/a |
+| Board Status changes that mill did not write | Reports it as board interference rather than silently obeying | n/a |
+| Poller hits an auth failure or a 404 | Marks the repo unhealthy and surfaces it, distinct from rate limiting | n/a |
+| GitHub rate-limits `gh` | Backs off to a ceiling and leaves the cursor alone, so it loses nothing | n/a |
+| Poller or supervisor thread raises | Logs it, restarts the thread with backoff, and surfaces its health | n/a |
+| Two runs on one subject | The unique partial index refuses the second | n/a |
+| Disk full | The supervisor stops claiming and surfaces it | n/a |
 
 ## Testing
 
@@ -986,16 +1373,22 @@ tokens.
 - **Poller** — a pure function of (board state, cursors, comments) → work. Table tests for the
   collaborator rule, the marker-at-line-start rule against real quote-reply bodies, mill
   refusing a fork head, and cursor monotonicity.
-- **Runner** — walks the graph against scripted verdicts: the two-strike rule, how it validates
-  an envelope and an artifact, when it treats a review as a rejection, how it picks a route, how
-  it finds the spec, and the one sanctioned counter reset.
+- **Runner** — walks the graph against scripted verdicts: how it validates an envelope and an
+  artifact, when it treats a review as a rejection, how it picks a route, how it finds the spec,
+  and the one sanctioned strike reset.
+- **The attempt ledger** — a table test with one case per row of the ledger's cost table,
+  asserting what each ending does to the invocation number and to the strike count. This is the
+  control plane every other subsystem routes its failures into, and its rules were the least
+  pinned-down part of the design, so it gets the most direct test in the suite. Include the case
+  the old rules could not express: a reviewer that crashes, then reviews cleanly, then reviews
+  again after a fix — three invocations, one strike, and three distinct verdict records.
 - **Supervisor** — worktree lifecycle against a scratch repo, preparing a repo on first touch,
   the concurrency cap, killing a process group whose child deliberately orphans itself, and
   removing stale locks.
 - **Sleep and wake** — the clock pair is injectable, so a test simulates a night's sleep by
   advancing the continuous clock without advancing the awake clock. Assert that the settle
-  window opens, that heartbeat reaping stays suppressed while it is open, and that an attempt
-  emitting nothing gets killed and resumed without consuming an attempt.
+  window opens, that heartbeat reaping stays suppressed while it is open, and that a stage
+  emitting nothing gets killed and resumed without taking a strike.
 - **Permission ruleset** — the layer-1 boundary, and the only suite that must run against the
   real CLI, because it is the only one asserting a boundary rather than logic. Assert against a
   real `claude -p` running with the stage's argv and settings file:
@@ -1007,6 +1400,12 @@ tokens.
     a request that looks like tampering gets refused on safety grounds before the permission
     layer is ever reached, which passes for the wrong reason.
   - Command-level Bash denies hold: a denied command is blocked while a sibling command runs.
+  - **Read denies hold through Grep and Glob, not just Read.** The spike verified refusal only
+    via the Read tool, and the `Write`-versus-`Edit` discovery proves this CLI can match rules
+    against some tools and not others. If Grep can match content inside a denied path, the read
+    half of layer 1 is partly inert and nothing would notice. Probe a denied path with all three
+    tools.
+  - `~/.mill/**` is unreachable: a stage can neither read its own settings file nor write one.
   - `--strict-mcp-config` leaves no MCP tools reachable.
   - **A regression test against the wrong mental model:** assert that a tool present in neither
     `allow` nor `deny` still runs. It does, under every permission mode. Anyone who later
@@ -1042,7 +1441,7 @@ retry, when to resume, and when to stop.
 
 **Verification is the bottleneck, not generation.** "Back pressure is the rule that you can only
 hand a loop as much autonomy as you can cheaply and reliably verify, and not one inch more."
-This is why half the graph is review stages, why every stage has a hard attempt cap, and why
+This is why half the graph is review stages, why every stage has a hard strike cap, and why
 `fail closed` is a principle. It is also why deep review exists: when the cheap check is not
 enough, buy a more expensive one deliberately rather than trusting a longer loop.
 
@@ -1092,15 +1491,15 @@ given that verification is the bottleneck. mill defers it; see [Deferred](#defer
   through, mill will not think it through for you.
 - **The review loop may not converge.** The reviewer skill assumes defects exist, and a `high`
   or `critical` objection re-runs the reviewed stage. If the reviewer reliably escalates on
-  every pass, every run burns both attempts and blocks — the cap turns an infinite loop into a
+  every pass, every run burns both strikes and blocks — the cap turns an infinite loop into a
   system that never finishes. Steve Yegge reportedly scrapped his "Gas Town" system for exactly
   this: certain Opus versions would not converge, always finding issues, with the fix-review
   cycle oscillating rather than settling. mill's defences are the severity threshold (only `high`
-  or `critical` triggers a re-run), the two-attempt cap, and session resume (the coding agent
+  or `critical` triggers a re-run), the two-strike cap, and session resume (the coding agent
   remembers its own reasoning, so it is less likely to undo its fix to satisfy a new objection).
   If this shows up in practice, the responses to try in order: tighten the threshold to
-  `critical` only; cap review-driven re-runs to one pass (attempt 2's review lands in the PR
-  body but never triggers attempt 3); or accept that some runs will block and treat that as the
+  `critical` only; cap review-driven re-runs to one pass, so the second review lands in the PR
+  body but never triggers another fix; or accept that some runs will block and treat that as the
   reviewer doing its job.
 - **Comprehension debt.** mill's only defence is that you read every PR. If you stop, it becomes
   a dark factory and the debt accrues silently.
@@ -1166,6 +1565,27 @@ with branch protection, so those mechanics are exercised too. It also needs a fi
 Plan B: an issue, `gh issue develop`, and a committed spec on the linked branch, or the `plan`
 route arrives to find nothing to adopt.
 
+**Two measurements gate two plans, and both need you at the machine.** Neither is design work and
+neither can be done from inside a Claude Code session; both block reasoning that already assumes
+the answer.
+
+1. **Does the awake clock really stop during sleep?** Record
+   `Process.clock_gettime(Process::CLOCK_MONOTONIC)` and
+   `Process.clock_gettime(Process::CLOCK_UPTIME_RAW)`, shut the lid for ten minutes, wake, record
+   both again. Equal deltas mean mill can never detect sleep and [Sleep and wake](#sleep-and-wake)
+   needs rebuilding on a different signal. **Gate on Plan C.**
+2. **Can the Projects v2 API report whether a built-in workflow is enabled?** Five minutes against
+   the GraphQL schema. If not, doctor's promised check needs the fallback described in
+   [The board is the queue](#the-board-is-the-queue). **Gate on Plan A.**
+
+Two more are cheapest to answer while building rather than before. **Does the tee see a command
+announced when it starts, or only when it finishes?** The stall detector's ability to tell a slow
+test suite from a wedged stage depends on it — answer during Plan A. And **can a stage invoke a
+skill when `Skill` is absent from its `--tools` list?** Every stage in the graph names a skill, and
+none of the toolsets includes the tool that loads one; see
+[Skills mill borrows, and skills mill owns](#skills-mill-borrows-and-skills-mill-owns) for what
+each answer costs. Settle it before Plan B writes the stage prompts.
+
 **Write one plan at a time**, and execute it before writing the next — doing Plan A teaches things
 that change Plan B, and a stale plan actively misleads. Each plan names the spec sections it
 implements rather than expecting an agent to read all of this. mill works on mill only after Plan
@@ -1183,7 +1603,7 @@ What held:
   denied sibling, explained why, and exited cleanly in 13 seconds.
 - Command-level Bash denies work: `Bash(curl:*)` blocked curl while `echo` ran.
 - `--resume` carries context across a separate process invocation and returns the **same**
-  session id, which is what attempt 2 depends on.
+  session id, which is what every relaunch depends on.
 
 What broke, and changed the design:
 
@@ -1218,11 +1638,11 @@ from here on every plan tests with no network and no tokens.
 
 ### Plan B — One run by hand — **the keystone**
 
-- Runner over the `plan` route against scripted verdicts: the two-strike rule, and when it
+- Runner over the `plan` route against scripted verdicts: the attempt ledger, and when it
   treats a review as a rejection
 - Finding the spec and adopting the branch: `linkedBranches`, the diff-based lookup
 - Real stage prompts and `mill-headless` for `triage → plan → review:plan → implement →
-  review:code → pr`
+  review:code → pr`, plus the two skills mill owns — `mill:implement` and `mill:pr`
 - `rake mill:run`
 
 *Demonstrable:* a real PR on `mill-scratch` from a real spec.
@@ -1263,6 +1683,37 @@ Evidence deliverable and deep review. Both are the most likely to change once mi
 been used, so planning them now would be guessing.
 
 ## Revision history
+
+**Revision 5 — an adversarial review, and the attempt ledger.** An independent review found 24
+defects and bet that six of them were one hole seen from six sides: nothing defined what an attempt
+was, so every recovery path charged the two-strike counter differently and the fragments disagreed.
+[The attempt ledger](#the-attempt-ledger) is the answer — an invocation number that counts every
+launch, and a strike count that rises only when the work was wrong. Everything the machine does to
+a stage is now free, and every free path has its own cap.
+
+The review's critical finding was that `triage` and `review:plan` hold no tool that can create a
+file, so neither could write the verdict the contract demanded, and every route begins with
+`triage`. The verdict now arrives as the stage's last message on the stream and mill writes the
+file itself, which also let `~/.mill` be denied outright — closing a hole where a stage with Write
+could have edited the permission ruleset that was moved out of the worktree to stop exactly that.
+
+Reading the borrowed skills properly also showed that two of them fight the graph rather than fit
+inside it. `executing-plans` redirects to a skill `implement` has no tool to run, creates a
+worktree mill already made, and ends by opening the pull request `review:code` has not yet gated;
+`finishing-a-development-branch` presents a menu whose first option is merging locally, which is
+the one thing mill must never do. Those two stages now use `mill:implement` and `mill:pr`, which
+keep the practices worth keeping — one task at a time, test-first, evidence rather than assertion,
+self-review, a commit per task, stop rather than guess — and drop everything that assumes a human
+in a terminal. The plan file's checkboxes become the ledger that survives a compacted context.
+
+Also: a stage running a slow test suite is no longer killed as wedged; a rate-limited stage no
+longer times out; a comment on a mill PR needs a `mill:` marker before it starts a run, and a
+comment on a blocked item is always an answer; a branch still checked out in your clone blocks
+instead of failing on a git error; the boot-time check no longer reads an NTP correction as a
+reboot; a permanently red CI check stops after two fix runs per commit instead of costing pipelines
+daily forever; deep review joined the failure taxonomy and gained a ceiling; and the two empirical
+claims nothing has tested — the sleep clock and the board's workflow API — are named as gates on
+Plan C and Plan A rather than assumed.
 
 **Revision 4 — the spike ran, and layer 1 was wrong.** Containment assumed an `allow` list
 confines a stage. It does not: in headless `-p` an unlisted tool runs anyway, under every

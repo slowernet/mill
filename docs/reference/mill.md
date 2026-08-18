@@ -9,6 +9,7 @@ First-time setup is a separate runbook: [setup.md](setup.md).
 ## Contents
 
 - [The board](#the-board)
+- [Talking to a run](#talking-to-a-run)
 - [Releasing work](#releasing-work)
 - [Key models](#key-models)
 - [Identifier types](#identifier-types)
@@ -47,6 +48,27 @@ built-in workflows must stay disabled, because they write Status too — `mill:d
 
 `Done` means "PR opened", not "finished". The three PR triggers operate after it.
 
+## Talking to a run
+
+**To answer a blocked run, just reply in a comment.** While an item is `Blocked`, every comment on
+it is read as an answer. No marker, no syntax.
+
+**To ask mill to change something on a PR it opened, start the comment with `mill:`.** Anything
+after the marker is the instruction, and a comment without it is ignored, so ordinary conversation
+on a mill PR costs nothing:
+
+```
+mill: the null check in Session#expire is in the wrong branch
+```
+
+Two things need no marker. A **PR review comment** is already a request for a change, and a **red
+required check** is a fact — mill acts on both by itself. It gives up after two fix runs against
+the same failing commit and says so on the PR.
+
+**Before you set Status to `Ready`, switch your clone off the branch.** git refuses to check a
+branch out in two places, so a branch left current in `~/code/<repo>` blocks the item until you
+move off it.
+
 ## Releasing work
 
 The normal path for a feature:
@@ -54,12 +76,17 @@ The normal path for a feature:
 1. **Design it interactively.** `gh issue develop <n>` to create and link a branch, then a
    normal Claude Code session — `brainstorming`, argument, revision. It commits a spec to
    `docs/superpowers/specs/`.
-2. **Push the branch.** The linked branch is how mill finds the spec; no path goes in the issue
-   body.
+2. **Push the branch, then switch off it.** The linked branch is how mill finds the spec; no path
+   goes in the issue body. Leaving it checked out in your clone blocks the item, because git
+   refuses to check one branch out twice.
 3. **Set Status to `Ready`.** That act asserts the design is reviewed.
 
 mill adopts the branch, plans, implements, reviews, and opens a PR with the spec, the plan, and
 the code in one diff.
+
+**An epic is a sequence of specs, not one spec.** One issue and one branch each, released in
+order, each after its predecessor's PR merges — mill does not stack branches. The size test and
+the rest of the spec checklist: [spec-standard.md](spec-standard.md).
 
 For a crash or a one-line fix, skip steps 1 and 2 — set Status to `Ready` on an issue with no
 linked branch and triage will route it to the fast path. An issue with neither a spec nor a
@@ -71,10 +98,10 @@ hotfix shape will block and ask you to think it through.
 - **Subject**: the thing a run is about — an issue or a pull request, as `subject_kind` plus `subject_number`. PR-entry runs have no issue.
 - **Run**: one subject moving through the pipeline on one branch, in one worktree
 - **Route**: `plan` (a spec exists — plan, review, implement, review, PR), `fast` (no spec, hotfix-shaped — diagnose, implement, review, PR), or `iterate` (entry from a PR trigger, on the existing branch)
-- **Spec**: the design you wrote, found as the file the linked branch adds under `docs/superpowers/specs/`. Exactly one; zero or many blocks.
-- **Stage**: a node in the graph; one `claude -p` process group with a fixed model, a named skill, and its own permission ruleset
-- **Attempt**: one execution of a stage. Two per stage, then the run blocks. Answering an exhaustion block resets that stage's counter once.
-- **Verdict**: JSON written by every attempt to `~/.mill/runs/<run-id>/verdict-<stage>-<n>.json`, outside the repo. Must carry the stage, attempt, and nonce mill passed in; status is `ok`, `blocked`, or `failed`.
+- **Spec**: the design you wrote, found as the file the linked branch adds under `docs/superpowers/specs/`. Exactly one is the spec; more than one blocks; none routes to `fast` if triage judges the issue hotfix-shaped, otherwise blocks.
+- **Stage**: a node in the graph; one `claude -p` process group with a fixed model, a named skill, and its own permission ruleset. Most stages borrow a Superpowers skill unchanged; `implement` and `pr` use mill's own `mill:implement` and `mill:pr`, because the Superpowers equivalents assume a human at a terminal and would open the PR early or offer to merge.
+- **Attempt**: one execution of a stage. mill counts two things about them. The **invocation number** goes up on every launch and names the log and verdict. The **strike count** goes up only when the work was judged bad — a crash, a failure, an unusable verdict, or a serious objection — and two strikes blocks the run. Anything the machine did to a stage costs an invocation and no strike. Answering an exhaustion block resets that stage's strikes once.
+- **Verdict**: the structured message a stage emits last, validated by mill and then written by mill to `~/.mill/runs/<run-id>/verdict-<stage>-<invocation>.json`. Stages cannot write there — `~/.mill` is denied to every stage. Must carry the stage, invocation, and nonce mill passed in; status is `ok`, `blocked`, or `failed`.
 - **Objection**: a reviewer finding with a severity. `high` or `critical` re-runs the reviewed stage; lower severities land in the PR body.
 - **Event**: a comment occurrence the poller has seen, keyed on node id, with a retry count and a terminal `dead` state. Board status is *not* an event — it is reconciled as state.
 

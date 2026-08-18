@@ -188,7 +188,10 @@ It checks, and names anything missing:
 
 - `gh` authenticated, with `project` scope
 - the project resolves and has `Status`, `Evidence`, and `Review` with the expected options
-- every built-in workflow on the project is disabled
+- every built-in workflow on the project is disabled — **if the Projects v2 API exposes
+  workflow enablement at all**, which is unverified (a Plan A gate in the design doc). If it
+  does not, doctor cannot check this directly; step 4 above is your confirmation, and mill
+  reports a Status it did not write as board interference rather than silently obeying it
 - the stage token exists, is readable only by you, is unexpired, and has exactly the two expected
   permissions
 - `~/.mill` and `~/.mill/secrets` are `0700`

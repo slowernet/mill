@@ -427,7 +427,6 @@ padding is stripped so the `p-6` utilities on `header` and `section` control spa
 Run and stage statuses map directly onto badge variants:
 
 ```erb
-<span class="badge-secondary">queued</span>
 <span class="badge">running</span>
 <span class="badge-outline">blocked</span>
 <span class="badge-success">done</span>

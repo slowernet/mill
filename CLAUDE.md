@@ -61,7 +61,7 @@ Prohibitions only. Breaking one is a bug regardless of what a task appears to as
 
 - Never write a call to `gh pr merge`. mill does not merge.
 - Never post a comment except through `Mill::Github`.
-- Never add a retry path around the two-attempts-per-stage counter.
+- Never add a retry path around the two-strikes-per-stage counter, and never charge a strike for something the machine did to a stage. The ledger in the design doc is the only place that decides.
 - Never signal a bare pid, and never signal at all without checking the recorded boot time first.
 - Never loosen a permission ruleset in `~/.mill/settings/`, and never add `--dangerously-skip-permissions` to the argv builder.
 - Never remove `--tools` or `--strict-mcp-config` from the argv builder, and never move confinement into an `allow` list — an allow list does not confine.
@@ -106,6 +106,7 @@ Prohibitions only. Breaking one is a bug regardless of what a task appears to as
 
 - When I say "store this" after you produce an extended reference document, store it in `docs/`
 - Whenever you update a documentation file, make sure to update its table of contents
+- **Specs committed to this repo must meet the standard in `docs/reference/spec-standard.md`** — run its checks and finishing question during brainstorming's self-review, before committing.
 - **Designs** go in `docs/superpowers/specs/`, **plans** go in `docs/superpowers/plans/`, **output samples** go in `docs/superpowers/samples/`. These are the Superpowers defaults and mill writes to the same paths in every repo it works in — do not fork the convention. GitHub issues serve as task trackers with summaries, not full plans.
 
 ### GitHub issue workflow
@@ -196,6 +197,7 @@ When you notice an inconsistency, mention it and ask if I want it fixed, even if
 - Give encouragement, but limit cheerleading phrases like "that's absolutely right" or "great question"
 - Tell me when ideas are flawed, incomplete, or poorly thought through
 - Focus on practical problems and realistic solutions
+- **Explain decisions as concrete scenarios in plain words**: what breaks, when, and what happens instead. Use the design doc's vocabulary (stage, attempt, verdict, run) but do not layer abstractions on top of it. If a sentence needs project jargon to parse, or you catch yourself writing "invariant" or "structurally", rewrite it. This applies hardest to the options in a multiple choice question, which is exactly where I get lost.
 
 ---
 
