@@ -2130,6 +2130,14 @@ been used, so planning them now would be guessing.
 
 ## Sources
 
+- **[Superpowers](https://github.com/obra/superpowers)** — Jesse Vincent, MIT. A runtime
+  dependency rather than an influence: `plan`, `diagnose` and `implement:fast` each load one of its
+  skills when they run, and `docs/superpowers/specs/` and `docs/superpowers/plans/` are its path
+  convention, which mill uses unchanged in every repo it works in. mill borrows the skills as they
+  are and adds two things around them — `mill-headless`, which redefines every interactive gate
+  they assume, and a per-stage prompt carrying what the skill cannot know. Practice-by-practice
+  attribution, including what mill deliberately drops, is in
+  [the beats doc](2026-08-18-sdlc-beats.md).
 - [The Software Factory — alexop.dev](https://alexop.dev/posts/the-software-factory/)
 - [Software Factories — Addy Osmani](https://addyosmani.com/blog/software-factories/)
 - Claude Code quickstart v2.0 (local, `~/Downloads/Claude Code quickstart (3).md`)
