@@ -163,5 +163,149 @@ module Mill
 			refute_predicate result, :ok?
 			assert_equal :clone_failed, result.problem
 		end
+
+		# --- preparation --------------------------------------------------------
+
+		def prepare = Mill::Repo.prepare(db: db, owner: 'slowernet', name: 'rep', url: @origin)
+
+		def repo_id = db[:repos].where(owner: 'slowernet', name: 'rep').get(:id)
+
+		def commit_to_base(clone, path, body)
+			File.write(File.join(clone, path), body)
+			Mill::Git.run!(clone, 'add', '-A')
+			Mill::Git.run!(clone, 'commit', '-m', "add #{path}")
+			Mill::Git.run!(clone, 'push', 'origin', 'main')
+		end
+
+		def write_secret_file(name, body)
+			FileUtils.mkdir_p(File.join(@home, 'secrets'))
+			path = File.join(@home, 'secrets', name)
+			File.write(path, body)
+			FileUtils.chmod(0o600, path)
+		end
+
+		# A stage's commit must not trigger a gc that rewrites refs while other
+		# runs are holding them.
+		def test_preparation_sets_the_config_that_stops_a_stage_triggering_gc
+			place_clone('rep')
+
+			result = prepare
+
+			assert_predicate result, :ok?
+			assert_equal '0', Mill::Git.run!(result.path, 'config', 'gc.auto').strip
+			assert_equal '0', Mill::Git.run!(result.path, 'config', 'maintenance.auto').strip
+		end
+
+		def test_preparation_caches_the_repo_row
+			place_clone('rep')
+			prepare
+			row = db[:repos].where(id: repo_id).first
+
+			refute_nil row[:prepared_at]
+			assert_equal 'main', row[:base_branch]
+			assert_equal File.join(@clones, 'rep'), row[:local_path]
+		end
+
+		# .mill.yml is read from the base branch, never from a checkout: an agent
+		# can edit it in its own worktree and that edit must not weaken the next run.
+		def test_reads_the_config_from_the_base_branch_only
+			clone = place_clone('rep')
+			commit_to_base(clone, '.mill.yml',
+				"test_command: bundle exec rake test\nsecrets:\n  - API_KEY\n")
+			Mill::Git.run!(clone, 'switch', '-c', 'feature')
+			File.write(File.join(clone, '.mill.yml'), "secrets: []\n")
+			write_secret_file('slowernet-rep.env', "API_KEY=x\n")
+
+			prepare
+			config = Mill::Repo.config(db, repo_id)
+
+			assert_equal 'bundle exec rake test', config[:test_command]
+			assert_equal ['API_KEY'], config[:secrets]
+		end
+
+		def test_a_repo_with_no_config_file_prepares_anyway
+			place_clone('rep')
+
+			assert_predicate prepare, :ok?
+			assert_empty Mill::Repo.config(db, repo_id)
+		end
+
+		# A missing secret fails the suite on both attempts, which reads as the
+		# stage being wrong. Say so before the run starts instead.
+		def test_a_named_secret_that_is_absent_blocks_the_item
+			clone = place_clone('rep')
+			commit_to_base(clone, '.mill.yml', "secrets:\n  - API_KEY\n  - DATABASE_URL\n")
+
+			result = prepare
+
+			refute_predicate result, :ok?
+			assert_equal :missing_secrets, result.problem
+			assert_match(/API_KEY/, result.questions.first)
+			assert_match(/DATABASE_URL/, result.questions.first)
+		end
+
+		def test_a_named_secret_that_is_present_does_not_block
+			clone = place_clone('rep')
+			commit_to_base(clone, '.mill.yml', "secrets:\n  - API_KEY\n")
+			write_secret_file('slowernet-rep.env', "API_KEY=x\n")
+
+			assert_predicate prepare, :ok?
+		end
+
+		def test_a_prepared_repo_is_not_prepared_twice
+			place_clone('rep')
+			prepare
+			first = db[:repos].where(id: repo_id).get(:prepared_at)
+			db[:repos].where(id: repo_id).update(local_path: '/gone')
+
+			result = prepare
+
+			assert_equal '/gone', result.path
+			assert_equal first, db[:repos].where(id: repo_id).get(:prepared_at)
+		end
+
+		# A config file that does not parse blocks the item. Left to raise it would
+		# wedge the poller loop in a retry cycle instead.
+		def test_a_config_file_that_does_not_parse_blocks_the_item
+			clone = place_clone('rep')
+			commit_to_base(clone, '.mill.yml', "secrets:\n  - [unclosed\n")
+
+			result = prepare
+
+			refute_predicate result, :ok?
+			assert_equal :unprepared, result.problem
+			assert_match(/\.mill\.yml/, result.questions.first)
+		end
+
+		# safe_load rejects Date by default, and an unquoted date in YAML is a Date.
+		# That must block the item, not escape as an unhandled Psych error.
+		def test_a_config_file_with_a_disallowed_class_blocks_the_item
+			clone = place_clone('rep')
+			commit_to_base(clone, '.mill.yml', "released: 2026-08-19\n")
+
+			result = prepare
+
+			refute_predicate result, :ok?
+			assert_equal :unprepared, result.problem
+		end
+
+		# A YAML file that parses to something other than a mapping is not config.
+		def test_a_config_file_that_is_not_a_mapping_is_ignored
+			clone = place_clone('rep')
+			commit_to_base(clone, '.mill.yml', "- one\n- two\n")
+
+			assert_predicate prepare, :ok?
+			assert_empty Mill::Repo.config(db, repo_id)
+		end
+
+		def test_an_unresolvable_clone_reports_rather_than_preparing
+			place_clone('rep')
+			place_clone('rep-again')
+
+			result = prepare
+
+			assert_equal :ambiguous_clone, result.problem
+			assert_nil repo_id
+		end
 	end
 end
