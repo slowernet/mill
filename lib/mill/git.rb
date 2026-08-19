@@ -51,6 +51,18 @@ module Mill
 			out.scan(%r{^branch refs/heads/(.+)$}).flatten
 		end
 
+		# mill adopts a branch; on the plan route it never creates one, because the
+		# branch came from `gh issue develop` and carries the spec.
+		def self.worktree_add(repo_path, tree_path, branch)
+			FileUtils.mkdir_p(File.dirname(tree_path))
+			run!(repo_path, 'worktree', 'add', tree_path, branch)
+			tree_path
+		end
+
+		def self.worktree_remove(repo_path, tree_path)
+			run!(repo_path, 'worktree', 'remove', '--force', tree_path)
+		end
+
 		def self.current_branch(repo_path)
 			result = run(repo_path, 'rev-parse', '--abbrev-ref', 'HEAD')
 			return nil unless result.ok

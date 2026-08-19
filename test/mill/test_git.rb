@@ -108,5 +108,32 @@ module Mill
 				Mill::Git.run(@repo, 'worktree', 'remove', '--force', tree)
 			end
 		end
+
+		def test_a_worktree_is_created_on_an_existing_branch
+			git('branch', 'work-here')
+			Dir.mktmpdir do |elsewhere|
+				tree = File.join(elsewhere, 'wt')
+				Mill::Git.worktree_add(@repo, tree, 'work-here')
+
+				assert_path_exists File.join(tree, 'README.md')
+				assert_includes Mill::Git.checked_out_branches(@repo), 'work-here'
+
+				Mill::Git.worktree_remove(@repo, tree)
+
+				refute_includes Mill::Git.checked_out_branches(@repo), 'work-here'
+			end
+		end
+
+		# git worktree add refuses a branch checked out anywhere. mill surfaces that
+		# as its own error rather than a raw git message, because the taxonomy has a
+		# row for it and none for "git said something".
+		def test_adding_a_worktree_for_a_held_branch_fails_loudly
+			git('switch', '-c', 'held')
+			Dir.mktmpdir do |elsewhere|
+				assert_raises(Mill::Git::Error) do
+					Mill::Git.worktree_add(@repo, File.join(elsewhere, 'wt'), 'held')
+				end
+			end
+		end
 	end
 end
