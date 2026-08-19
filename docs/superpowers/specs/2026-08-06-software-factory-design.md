@@ -8,6 +8,7 @@ Design doc, begun 2026-08-06. Git holds the history of how it changed.
   - [The pipeline, end to end](#the-pipeline-end-to-end)
   - [When there is no spec](#when-there-is-no-spec)
   - [Where the human is](#where-the-human-is)
+- [Where this stands](#where-this-stands)
 - [Non-goals](#non-goals)
 - [Principles](#principles)
 - [Architecture](#architecture)
@@ -117,6 +118,44 @@ design session." mill declining to guess is a feature.
 | Building it | mill (`implement`) |
 | Whether it's correct | mill's adversarial reviewers, then CI |
 | Whether to ship it | You, at the PR |
+
+## Where this stands
+
+**This document is written in the present tense throughout, and about half of it does not exist
+yet.** That is deliberate — it describes the system being built, not a changelog — but it means a
+reader needs one place to find out what is real. This is that place; nothing else in the document
+is annotated, so there is one thing to keep current rather than fifty.
+
+Plans 1 and 2 are complete, and a real pull request came out of the far end on 2026-08-19.
+
+| Subsystem | State |
+|---|---|
+| `Mill::Clock`, `Spawn`, `Stream`, `Verdict`, `Claude` | Built. One stage launch, end to end, with the verdict schema-constrained |
+| `Mill::Github`, `Mill::Git`, `Mill::Spec` | Built. Every `gh` and `git` call mill makes |
+| `Mill::Ledger`, `Mill::Runner`, `Mill::Run` | Built. Walks the `plan` route, applies the ledger, resumes a blocked run |
+| `Mill::Rules`, `Mill::Doctor` | Built. Rulesets written from one definition and checked against it |
+| Stage prompts, `mill:implement`, `mill:pr`, `mill-headless` | Built for the `plan` route only |
+| The `plan` route, end to end | **Demonstrated.** `slowernet/mill-scratch#2`, 18 minutes, no strikes |
+| `Mill::Poller` | Not built. No board reads, no comment cursors, no triggers |
+| `Mill::Supervisor` | Not built. No repo preparation, worktree lifecycle, concurrency cap, lock clearing, or reaping |
+| Sleep and wake | Clock pair built; nothing reads it. No settle window, no stall detector, no power assertion |
+| Web UI | Not built. No routes, no kill switch, no log view |
+| `fast` and `iterate` routes | Not built. `diagnose`, `implement:fast` and `push` have config and rulesets but no prompts, and have never run |
+| Board writes, comments | `Mill::Github#comment` exists; nothing calls it. mill has never written a Status |
+| Secrets injection, scoped `GH_TOKEN` | Not built. `Mill::Rules.env_for` is the hook and carries one variable |
+| Deep review, evidence requirement, retention, CI-fix trigger | Not built. `ci_fixes` and `events` exist as tables and are unused |
+
+**Built but never exercised**, which is a different thing from built:
+
+- **The boundary suite.** `test/boundary/` asserts layer 1 against the real CLI and has not been
+  run. Everything the containment section claims rests on probes done by hand, not on that suite.
+- **Rejection.** A `high` or `critical` objection re-running the reviewed stage is tested against
+  scripted verdicts only. Both reviewers passed clean on the one real run.
+- **The sanctioned strike reset.** Tested; has never fired against a real stage.
+- **The `--resume` fallback.** The contract says a failed resume starts a fresh session with the
+  prior context appended, costing an attempt and no strike. Not implemented: a failed resume
+  currently reads as a crashed attempt and takes a strike, which is the one place the ledger and
+  the code disagree.
 
 ## Non-goals
 
@@ -1818,7 +1857,7 @@ D, when the kill switch and the log tail exist; before that, it is two unreliabl
 
 ### Spike — the permission model
 
-Not a plan. Throwaway code, standalone, first. **Run on 2026-08-13 against CLI 2.1.223**, and it
+**Done, 2026-08-13.** Not a plan. Throwaway code, standalone, first. Run against CLI 2.1.223, and it
 changed the design; the results are folded into [Containment](#containment) and the toolset
 column above.
 
@@ -1868,6 +1907,11 @@ the wrong reason.
 *Demonstrable:* doctor green against a real board; `rake mill:probe` spawns `claude`, validates a
 nonce-stamped verdict, and reports its token usage.
 
+**Done, 2026-08-19.** `rake mill:probe[triage]` returns a validated verdict and its token counts.
+Doctor is green on 26 checks; the board check stays red until `MILL_PROJECT` is set, and Plan 2 does
+not read the board. **Not exercised: the boundary suite**, which is written and has never run — so
+every containment claim in this document rests on probes done by hand.
+
 **What Plan 1 does not build.** There is no runner, no ledger, and no stage prompt. `Mill::Claude`
 owns the *envelope* — the JSON contract every verdict must satisfy — and nothing above it. The
 prose that tells a stage what job to do is Plan 2's, along with the two skills mill owns and the
@@ -1892,7 +1936,35 @@ No board, no poller, no supervisor, no UI. This retires every integration risk a
 system is still small enough to debug by reading stdout. Everything before it is scaffolding;
 everything after is automation wrapped around a working core.
 
+**Done, 2026-08-19: `slowernet/mill-scratch#2`.** Eighteen minutes wall clock, six stages, **no
+strikes**. Longest stage `plan` at 4.6 minutes, against a 30-minute cap — so the caps are set
+generously. Cache reads totalled 2.4M against roughly 200 fresh input tokens, which is the
+three-orders-of-magnitude claim in the stage contract, measured.
+
+**What it cost to get there, and what each cost bought.** The run blocked four times, every one of
+them a question rather than a failure, so the ledger charged nothing — which is the rule working
+rather than a lucky escape.
+
+1. **The verdict was rejected twice for a leading sentence.** `triage` produced a correct,
+   nonce-stamped verdict behind one line of narration, once fenced and once not. That cost two
+   strikes and $0.17 to reject the right answer, and it is why the verdict is now schema-constrained
+   rather than asked for. The general lesson is in the stage contract: a constraint the prompt asks
+   for is a constraint the pipeline does not have.
+2. **The sandbox denies egress.** This document had listed unrestricted network access as an
+   accepted risk; the opposite was true. Egress is now allowlisted per stage.
+3. **`gh` cannot verify TLS inside the sandbox.** Which moved pull-request creation to
+   `Mill::Github` and closed the second-seam limitation.
+4. **The resume path did not exist.** Answering a blocked run was Plan 3's work, and a run blocked
+   at `pr` with no way to answer it. Pulled forward and built here.
+
+**Not exercised:** rejection — both reviewers passed clean, so a `high` objection re-running the
+reviewed stage has only ever run against scripted verdicts. Nor has the strike reset. The `pr` stage
+also refused, unprompted, to wrap a command in a script to route around an approval gate, calling it
+evasion of a permission control; containment held on the honour system as well as the mechanical one.
+
 ### Plan 3 — Autonomy
+
+**Not started.** The clock pair exists and nothing reads it.
 
 - Supervisor: prepares a repo on first touch, manages the worktree lifecycle, removes stale
   locks, enforces the concurrency cap, kills a process group
@@ -1906,6 +1978,8 @@ the run recovers instead of burning a strike.
 
 ### Plan 4 — Observe and interrupt
 
+**Not started.** The log view is specified per attempt; see the Web UI section.
+
 - Roda UI: run list with health and spend, run detail, log endpoint, kill, pause and resume,
   repo diagnostics
 - How a run blocks, asks, and resumes, including the sanctioned counter reset
@@ -1914,6 +1988,8 @@ the run recovers instead of burning a strike.
 blocks, your comment resumes it, the run finishes.
 
 ### Plan 5 — Other routes
+
+**Not started.** `diagnose`, `implement:fast` and `push` have config and rulesets but no prompts.
 
 - `fast` route with `diagnose`
 - `iterate` route and the PR triggers
