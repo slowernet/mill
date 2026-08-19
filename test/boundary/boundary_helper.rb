@@ -79,7 +79,7 @@ module Mill
 			claude.instance_variable_set(:@config, claude.config.merge(tools: tools.freeze).freeze) if tools
 			attempt = nil
 			thread = Thread.new do
-				attempt = claude.run(prompt, invocation: 1, worktree: @worktree, log_path: log)
+				attempt = claude.run(prompt, number: 1, worktree: @worktree, log_path: log)
 			end
 			flunk "#{stage} probe did not finish within #{TIMEOUT}s" unless thread.join(TIMEOUT)
 

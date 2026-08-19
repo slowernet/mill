@@ -722,7 +722,7 @@ lines, stop when the attempt finishes. No client-side state machine, no reconnec
 diffing.
 
 **The tail belongs to one attempt.** Logs are written per launch —
-`~/.mill/logs/<run-id>/<stage>-<invocation>.jsonl` — and a stage can be launched several times in
+`~/.mill/logs/<run-id>/<stage>-<number>.jsonl` — and a stage can be launched several times in
 one run, so the run detail page links to each attempt rather than tailing "the run".
 
 **The endpoint renders; this stays dumb.** What mill spawns emits `stream-json`, which is not
@@ -737,10 +737,10 @@ ready(() => {
 	if (!out) return
 
 	let offset = parseInt(out.dataset.offset || '0')
-	const { runId, stage, invocation } = out.dataset
+	const { runId, stage, attempt } = out.dataset
 
 	const poll = async () => {
-		const url = `/runs/${runId}/attempts/${stage}/${invocation}/log?offset=${offset}`
+		const url = `/runs/${runId}/attempts/${stage}/${attempt}/log?offset=${offset}`
 		const data = await getjson(url)
 		if (data.lines.length) {
 			out.insertAdjacentHTML('beforeend', data.lines.map(l =>
@@ -795,7 +795,7 @@ pre-written SHA file.
 |---|---|
 | `GET /` | Stat tile (running, blocked, tokens today, disk), Table (run list), Badge (status), Pagination |
 | `GET /runs/:id` | Card (stage timeline, one row per attempt, linking to it), Table (per-stage token breakdown), Badge, Dialog (confirm kill), Spinner |
-| `GET /runs/:id/attempts/:stage/:invocation` | Card (verdict first: status, artifact, questions or objections, cost), Badge, log tail underneath |
+| `GET /runs/:id/attempts/:stage/:number` | Card (verdict first: status, artifact, questions or objections, cost), Badge, log tail underneath |
 | `GET /worktrees` | Table (run, branch, status, disk), Button (delete per row), Dialog (confirm delete) |
 | `GET /repos` | Card, Table (prepared state, resolved clone, prerequisites), Badge (healthy / unhealthy) |
 | Layout | Sidebar nav item, Switch (pause claiming), Toast, health banner |

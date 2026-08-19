@@ -46,16 +46,16 @@ module Mill
 
 			tally = @ledger.tally(@stage)
 			return halt(:blocked, "#{@stage} has used both its strikes") if tally.out_of_strikes?
-			return halt(:blocked, "#{@stage} hit its invocation cap") if tally.out_of_invocations?
+			return halt(:blocked, "#{@stage} hit its number cap") if tally.out_of_attempts?
 
-			settle(launch(@stage, tally.next_invocation), tally.next_invocation)
+			settle(launch(@stage, tally.next_attempt), tally.next_attempt)
 		end
 
 		private
 
-		def launch(stage, invocation)
+		def launch(stage, number)
 			@launcher.call(
-				stage: stage, invocation: invocation,
+				stage: stage, number: number,
 				prompt: Mill::Prompts.for(stage, prompt_context(stage)),
 				session_id: @sessions[stage]
 			)
@@ -64,26 +64,26 @@ module Mill
 		# A relaunch resumes the stage's own session so the agent remembers its
 		# work. The one exception is a verdict that failed validation: mill has no
 		# trustworthy account of what happened, so it starts fresh.
-		def settle(attempt, invocation)
+		def settle(attempt, number)
 			outcome = Mill::Ledger.classify(attempt)
 			@sessions[@stage] = outcome == :no_verdict ? nil : attempt.session_id
 
 			case outcome
 			when :blocked
-				@ledger.charge(stage: @stage, outcome: :blocked, invocation: invocation, attempt: attempt)
+				@ledger.charge(stage: @stage, outcome: :blocked, number: number, attempt: attempt)
 				halt(:blocked, "#{@stage} asked a question", questions: attempt.verdict.questions)
 			when :ok
 				remember(attempt)
-				reviewer?(@stage) && attempt.verdict.rejects? ? reject(attempt, invocation) : advance(attempt, invocation)
+				reviewer?(@stage) && attempt.verdict.rejects? ? reject(attempt, number) : advance(attempt, number)
 			else
-				@ledger.charge(stage: @stage, outcome: outcome, invocation: invocation, attempt: attempt)
+				@ledger.charge(stage: @stage, outcome: outcome, number: number, attempt: attempt)
 				:rerun
 			end
 		end
 
-		def advance(attempt, invocation)
+		def advance(attempt, number)
 			@ledger.charge(stage: @stage, outcome: reviewer?(@stage) ? :reviewed_clean : :ok,
-				invocation: invocation, attempt: attempt)
+				number: number, attempt: attempt)
 			@stage = Mill::Stages.next_stage(route, @stage)
 			@stage.nil? ? finish : :advanced
 		end
@@ -91,11 +91,11 @@ module Mill
 		# A reviewer that finds something serious is the reviewer succeeding: it
 		# costs the reviewer nothing and strikes the stage it reviewed. One row,
 		# for the launch that actually happened — the strike rides on it, attributed
-		# to whoever pays. The reviewed stage's invocation is its re-launch.
-		def reject(attempt, invocation)
+		# to whoever pays. The reviewed stage's number is its re-launch.
+		def reject(attempt, number)
 			reviewed = Mill::Stages.reviewed_stage(route, @stage)
 			@objections[reviewed] = attempt.verdict.serious_objections
-			@ledger.charge(stage: @stage, outcome: :reviewed_clean, invocation: invocation,
+			@ledger.charge(stage: @stage, outcome: :reviewed_clean, number: number,
 				attempt: attempt, struck_stage: reviewed)
 
 			return halt(:blocked, "#{reviewed} has used both its strikes") if @ledger.out_of_strikes?(reviewed)

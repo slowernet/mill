@@ -14,9 +14,9 @@ module Mill
 				require 'json'
 				prompt = ARGV[ARGV.index('-p') + 1]
 				stage = prompt[/`stage` is "([^"]+)"/, 1]
-				invocation = prompt[/`invocation` is (\\d+)/, 1].to_i
+				number = prompt[/`attempt` is (\\d+)/, 1].to_i
 				nonce = prompt[/`nonce` is\\s*\\n?\\s*"([0-9a-f]+)"/, 1]
-				verdict = { stage: stage, invocation: invocation, nonce: nonce, status: 'ok' }
+				verdict = { stage: stage, attempt: number, nonce: nonce, status: 'ok' }
 					.merge(JSON.parse(#{verdict_overrides.to_json.dump}, symbolize_names: true))
 				puts({ type: 'system', subtype: 'init', session_id: 'sess-fake', model: 'claude-opus-5' }.to_json)
 				# --json-schema makes the real CLI return the verdict already parsed in
@@ -50,7 +50,7 @@ module Mill
 			claude = Fake.new(stage, home: '/tmp/mill-test')
 			claude.stand_in = stand_in || fake_stage(overrides, exit_code: exit_code)
 			yield @worktree if block_given?
-			attempt = claude.run('Do the thing.', invocation: rest.fetch(:invocation, 1),
+			attempt = claude.run('Do the thing.', number: rest.fetch(:number, 1),
 				worktree: @worktree, log_path: File.join(@worktree, '.log', 'a.jsonl'))
 			[attempt, claude]
 		end

@@ -3,21 +3,21 @@ require 'tmpdir'
 
 module Mill
 	class TestVerdict < Minitest::Test
-		ENVELOPE = { stage: 'plan', invocation: 1, nonce: 'n1' }.freeze
+		ENVELOPE = { stage: 'plan', attempt: 1, nonce: 'n1' }.freeze
 
-		def validate(overrides = {}, stage: 'plan', invocation: 1, nonce: 'n1', worktree: nil)
+		def validate(overrides = {}, stage: 'plan', number: 1, nonce: 'n1', worktree: nil)
 			body = { status: 'ok', artifact: 'docs/superpowers/plans/x.md', summary: 's' }
 			raw = ENVELOPE.merge(body).merge(overrides)
 			raw = raw.to_json unless raw.is_a?(String)
-			Mill::Verdict.validate(raw, stage: stage, invocation: invocation, nonce: nonce, worktree: worktree)
+			Mill::Verdict.validate(raw, stage: stage, number: number, nonce: nonce, worktree: worktree)
 		end
 
 		# With --json-schema the CLI hands back the verdict already parsed, so the
 		# usual input is a Hash rather than a string to parse.
 		def test_a_parsed_verdict_validates_without_a_round_trip
 			v = Mill::Verdict.validate(
-				{ stage: 'triage', invocation: 1, nonce: 'n1', status: 'ok', summary: 's' },
-				stage: 'triage', invocation: 1, nonce: 'n1', worktree: nil
+				{ stage: 'triage', attempt: 1, nonce: 'n1', status: 'ok', summary: 's' },
+				stage: 'triage', number: 1, nonce: 'n1', worktree: nil
 			)
 
 			assert_predicate v, :valid?
@@ -26,8 +26,8 @@ module Mill
 
 		def test_a_parsed_verdict_is_still_checked_against_this_launch
 			v = Mill::Verdict.validate(
-				{ stage: 'triage', invocation: 1, nonce: 'stale', status: 'ok' },
-				stage: 'triage', invocation: 1, nonce: 'n1', worktree: nil
+				{ stage: 'triage', attempt: 1, nonce: 'stale', status: 'ok' },
+				stage: 'triage', number: 1, nonce: 'n1', worktree: nil
 			)
 
 			refute_predicate v, :valid?
@@ -37,8 +37,8 @@ module Mill
 		# String keys would arrive if anything ever hands mill an unsymbolized hash.
 		def test_a_parsed_verdict_with_string_keys_is_read_the_same_way
 			v = Mill::Verdict.validate(
-				{ 'stage' => 'triage', 'invocation' => 1, 'nonce' => 'n1', 'status' => 'ok' },
-				stage: 'triage', invocation: 1, nonce: 'n1', worktree: nil
+				{ 'stage' => 'triage', 'attempt' => 1, 'nonce' => 'n1', 'status' => 'ok' },
+				stage: 'triage', number: 1, nonce: 'n1', worktree: nil
 			)
 
 			assert_predicate v, :valid?
@@ -47,7 +47,7 @@ module Mill
 		# Silence is never success.
 		def test_a_missing_verdict_is_a_failure
 			%w[  ].push(nil, '').each do |raw|
-				v = Mill::Verdict.validate(raw, stage: 'plan', invocation: 1, nonce: 'n1', worktree: nil)
+				v = Mill::Verdict.validate(raw, stage: 'plan', number: 1, nonce: 'n1', worktree: nil)
 
 				refute v.valid?
 				assert_match(/no verdict/, v.errors.first)
@@ -56,7 +56,7 @@ module Mill
 
 		# A crashed reviewer must never read as approval.
 		def test_a_crashed_stage_does_not_inherit_a_pass
-			v = Mill::Verdict.validate('', stage: 'review:code', invocation: 2, nonce: 'n9', worktree: nil)
+			v = Mill::Verdict.validate('', stage: 'review:code', number: 2, nonce: 'n9', worktree: nil)
 
 			refute v.valid?
 			refute_equal 'ok', v.status
@@ -79,13 +79,13 @@ module Mill
 		end
 
 		def test_rejects_a_verdict_from_an_earlier_launch
-			refute_predicate validate({ invocation: 1 }, invocation: 2), :valid?
+			refute_predicate validate({ attempt: 1 }, number: 2), :valid?
 		end
 
 		# Prose after the JSON is a loud, immediate failure rather than a quiet one.
 		def test_rejects_trailing_prose
 			raw = ENVELOPE.merge(status: 'ok', artifact: 'docs/superpowers/plans/x.md').to_json + "\n\nHope that helps!"
-			v = Mill::Verdict.validate(raw, stage: 'plan', invocation: 1, nonce: 'n1', worktree: nil)
+			v = Mill::Verdict.validate(raw, stage: 'plan', number: 1, nonce: 'n1', worktree: nil)
 
 			refute v.valid?
 			assert_match(/not valid JSON/, v.errors.first)
@@ -141,8 +141,8 @@ module Mill
 
 		def test_triage_may_set_a_known_route
 			v = Mill::Verdict.validate(
-				{ stage: 'triage', invocation: 1, nonce: 'n1', status: 'ok', route: 'fast' }.to_json,
-				stage: 'triage', invocation: 1, nonce: 'n1', worktree: nil
+				{ stage: 'triage', attempt: 1, nonce: 'n1', status: 'ok', route: 'fast' }.to_json,
+				stage: 'triage', number: 1, nonce: 'n1', worktree: nil
 			)
 
 			assert_predicate v, :valid?
@@ -150,8 +150,8 @@ module Mill
 
 		def test_triage_may_not_invent_a_route
 			v = Mill::Verdict.validate(
-				{ stage: 'triage', invocation: 1, nonce: 'n1', status: 'ok', route: 'refactor' }.to_json,
-				stage: 'triage', invocation: 1, nonce: 'n1', worktree: nil
+				{ stage: 'triage', attempt: 1, nonce: 'n1', status: 'ok', route: 'refactor' }.to_json,
+				stage: 'triage', number: 1, nonce: 'n1', worktree: nil
 			)
 
 			refute_predicate v, :valid?
@@ -160,14 +160,14 @@ module Mill
 		# A reviewer returns ok with objections; it does not fail. Only high or
 		# critical re-runs the reviewed stage.
 		def test_only_serious_objections_reject
-			body = { stage: 'review:code', invocation: 1, nonce: 'n1', status: 'ok' }
+			body = { stage: 'review:code', attempt: 1, nonce: 'n1', status: 'ok' }
 			minor = Mill::Verdict.validate(
 				body.merge(objections: [{ severity: 'low', claim: 'nit' }, { severity: 'medium', claim: 'meh' }]).to_json,
-				stage: 'review:code', invocation: 1, nonce: 'n1', worktree: nil
+				stage: 'review:code', number: 1, nonce: 'n1', worktree: nil
 			)
 			serious = Mill::Verdict.validate(
 				body.merge(objections: [{ severity: 'low', claim: 'nit' }, { severity: 'high', claim: 'race' }]).to_json,
-				stage: 'review:code', invocation: 1, nonce: 'n1', worktree: nil
+				stage: 'review:code', number: 1, nonce: 'n1', worktree: nil
 			)
 
 			assert_predicate minor, :valid?
@@ -178,8 +178,8 @@ module Mill
 
 		def test_a_clean_review_rejects_nothing
 			v = Mill::Verdict.validate(
-				{ stage: 'review:plan', invocation: 1, nonce: 'n1', status: 'ok' }.to_json,
-				stage: 'review:plan', invocation: 1, nonce: 'n1', worktree: nil
+				{ stage: 'review:plan', attempt: 1, nonce: 'n1', status: 'ok' }.to_json,
+				stage: 'review:plan', number: 1, nonce: 'n1', worktree: nil
 			)
 
 			assert_predicate v, :valid?

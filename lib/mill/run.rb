@@ -49,7 +49,7 @@ module Mill
 
 		def prepared? = @problem.nil? && !@run_id.nil?
 
-		# The block, if given, is called with (stage, invocation, resuming) as each
+		# The block, if given, is called with (stage, number, resuming) as each
 		# launch starts — which is what `rake mill:run` prints. It wraps the real
 		# launcher rather than replacing it, so watching a run cannot change it.
 		def call(launcher: nil, &announce)
@@ -98,11 +98,11 @@ module Mill
 		def issue_body = @issue_body ||= @github.issue(@repo, @number)[:body].to_s
 
 		def default_launcher(&announce)
-			lambda do |stage:, prompt:, invocation:, session_id:|
-				announce&.call(stage, invocation, !session_id.nil?)
+			lambda do |stage:, prompt:, number:, session_id:|
+				announce&.call(stage, number, !session_id.nil?)
 				log = File.join(Mill.home, 'logs', @run_id.to_s,
-					"#{Mill::Stages.slug(stage)}-#{invocation}.jsonl")
-				@claude.new(stage).run(prompt, invocation: invocation, worktree: @worktree,
+					"#{Mill::Stages.slug(stage)}-#{number}.jsonl")
+				@claude.new(stage).run(prompt, number: number, worktree: @worktree,
 					log_path: log, session_id: session_id)
 			end
 		end

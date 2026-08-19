@@ -10,8 +10,8 @@ module Mill
 		# strike, never take mill down with it.
 		def verdict(body, stage: 'review:code')
 			Mill::Verdict.validate(
-				{ stage: stage, invocation: 1, nonce: 'n' }.merge(body).to_json,
-				stage: stage, invocation: 1, nonce: 'n', worktree: nil
+				{ stage: stage, attempt: 1, nonce: 'n' }.merge(body).to_json,
+				stage: stage, number: 1, nonce: 'n', worktree: nil
 			)
 		end
 
@@ -107,9 +107,9 @@ module Mill
 				File.symlink(File.join(sibling, 'x.md'), File.join(work, 'docs/superpowers/plans/x.md'))
 
 				v = Mill::Verdict.validate(
-					{ stage: 'plan', invocation: 1, nonce: 'n', status: 'ok',
+					{ stage: 'plan', attempt: 1, nonce: 'n', status: 'ok',
 					  artifact: 'docs/superpowers/plans/x.md' }.to_json,
-					stage: 'plan', invocation: 1, nonce: 'n', worktree: work
+					stage: 'plan', number: 1, nonce: 'n', worktree: work
 				)
 
 				refute_predicate v, :valid?
@@ -155,9 +155,9 @@ module Mill
 				FileUtils.mkdir_p(File.join(work, 'docs/superpowers/plans/x.md'))
 
 				v = Mill::Verdict.validate(
-					{ stage: 'plan', invocation: 1, nonce: 'n', status: 'ok',
+					{ stage: 'plan', attempt: 1, nonce: 'n', status: 'ok',
 					  artifact: 'docs/superpowers/plans/x.md' }.to_json,
-					stage: 'plan', invocation: 1, nonce: 'n', worktree: work
+					stage: 'plan', number: 1, nonce: 'n', worktree: work
 				)
 
 				refute_predicate v, :valid?

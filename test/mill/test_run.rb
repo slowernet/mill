@@ -124,7 +124,7 @@ module Mill
 		def test_a_run_walks_the_route_with_an_injected_launcher
 			run = run_for.prepare
 			stages = []
-			outcome = run.call(launcher: lambda { |stage:, prompt:, invocation:, session_id:|
+			outcome = run.call(launcher: lambda { |stage:, prompt:, number:, session_id:|
 				stages << stage
 				scripted_attempt(stage)
 			})
@@ -146,7 +146,7 @@ module Mill
 		def test_the_default_launcher_announces_every_launch_before_running_it
 			run = run_for(claude: FakeClaude).prepare
 			seen = []
-			run.call { |stage, invocation, resuming| seen << [stage, invocation, resuming] }
+			run.call { |stage, number, resuming| seen << [stage, number, resuming] }
 
 			assert_equal Mill::Stages::ROUTES['plan'], seen.map(&:first)
 			assert_equal [1] * 6, seen.map { |s| s[1] }
@@ -155,7 +155,7 @@ module Mill
 			run&.teardown
 		end
 
-		# The launcher writes one log per attempt, named by stage and invocation.
+		# The launcher writes one log per attempt, named by stage and number.
 		def test_each_attempt_gets_its_own_log_path
 			run = run_for(claude: FakeClaude).prepare
 			run.call
@@ -184,7 +184,7 @@ module Mill
 			result.define_singleton_method(:success?) { true }
 			result.define_singleton_method(:log_path) { log_path }
 			result.define_singleton_method(:stream) { stream }
-			Mill::Claude::Attempt.new(stage: stage, invocation: 1, nonce: 'n',
+			Mill::Claude::Attempt.new(stage: stage, number: 1, nonce: 'n',
 				result: result, verdict: verdict)
 		end
 

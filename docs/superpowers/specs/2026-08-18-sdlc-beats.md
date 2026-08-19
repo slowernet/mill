@@ -57,7 +57,7 @@ not mill. This is deliberately outside the pipeline.
 
 The spec is the single document the entire pipeline rests on. Mill cannot ask you to
 clarify it mid-run without blocking, and each block costs hours of wall time plus every
-Opus invocation that ran before it. A spec that is complete for a human reader ("handle
+Opus attempt that ran before it. A spec that is complete for a human reader ("handle
 errors gracefully") is incomplete for a machine reader — the planner has to invent the error
 handling strategy and might guess wrong, and if it blocks to ask, you pay a round trip for a
 decision you could have made in the design session.
@@ -149,7 +149,7 @@ mill passes the plan stage the spec path, the issue body, and the triage verdict
 
 **Throughput principle: the plan stage is where every question should surface.** Each time
 `implement` blocks for human input, it costs hours of wall time and wastes every Opus
-invocation that ran before it. The planner's job is to make that rare by asking every
+attempt that ran before it. The planner's job is to make that rare by asking every
 question the pipeline will ever need to ask, in one batch, before it finishes.
 
 ### Understanding the codebase
@@ -511,8 +511,8 @@ become rare later, where they're expensive.
 |---|---|---|
 | Spec writing (you, interactively) | Free — you're right there | **This is the cheapest place to make decisions.** Every judgment call left for the planner to make is a potential block or a wrong guess |
 | `triage` | Cheap — Sonnet, first stage, nothing wasted | Whenever the issue is unclear. This is the right time to ask |
-| `plan` | Moderate — one Opus invocation, but nothing downstream has run | **The last good place for questions.** The buildability test catches remaining spec gaps; one batch, one round trip |
-| `review:plan` | Moderate — two Opus invocations total | Rarely for questions; usually for objections that re-run plan without a human |
+| `plan` | Moderate — one Opus attempt, but nothing downstream has run | **The last good place for questions.** The buildability test catches remaining spec gaps; one batch, one round trip |
+| `review:plan` | Moderate — two Opus calls total | Rarely for questions; usually for objections that re-run plan without a human |
 | `implement` | Expensive — plan + review:plan already ran | **Genuinely exceptional.** A block here means the spec, the plan, AND the plan review all missed a gap. Still correct to block rather than guess |
 | `review:code` | Very expensive — the whole pipeline ran | Almost never for questions; objections re-run implement without a human |
 | `pr` | Very expensive | Only when tests fail |

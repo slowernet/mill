@@ -28,7 +28,7 @@ module Mill
 			result.define_singleton_method(:log_path) { '/dev/null' }
 			result.define_singleton_method(:stream) { stream }
 
-			Mill::Claude::Attempt.new(stage: nil, invocation: nil, nonce: 'n',
+			Mill::Claude::Attempt.new(stage: nil, number: nil, nonce: 'n',
 				result: result, verdict: verdict)
 		end
 
@@ -37,8 +37,8 @@ module Mill
 			@calls = []
 			run_id = create_run(repo_id: create_repo, route: route)
 			queue = script.dup
-			launcher = lambda do |stage:, prompt:, invocation:, session_id:|
-				@calls << { stage: stage, invocation: invocation, session_id: session_id, prompt: prompt }
+			launcher = lambda do |stage:, prompt:, number:, session_id:|
+				@calls << { stage: stage, number: number, session_id: session_id, prompt: prompt }
 				reply = queue.shift or raise "script exhausted at #{stage}"
 				reply.is_a?(Proc) ? reply.call(stage) : reply
 			end
@@ -61,10 +61,10 @@ module Mill
 			assert_equal Mill::Stages::ROUTES['plan'], @calls.map { |c| c[:stage] }
 		end
 
-		def test_every_stage_is_launched_at_invocation_one_on_a_clean_run
+		def test_every_stage_is_launched_as_attempt_one_on_a_clean_run
 			runner_for(clean_run).call
 
-			assert_equal [1] * 6, @calls.map { |c| c[:invocation] }
+			assert_equal [1] * 6, @calls.map { |c| c[:number] }
 		end
 
 		def test_the_first_launch_of_a_stage_is_a_fresh_session
@@ -105,7 +105,7 @@ module Mill
 			runner.call
 
 			assert_equal 0, Mill::Ledger.new(db, runner.run_id).strikes('triage')
-			assert_equal 1, Mill::Ledger.new(db, runner.run_id).invocations('triage')
+			assert_equal 1, Mill::Ledger.new(db, runner.run_id).attempts('triage')
 		end
 
 		# --- failure and resume ---------------------------------------------
@@ -116,7 +116,7 @@ module Mill
 			runner.call
 
 			assert_equal %w[triage triage], @calls.first(2).map { |c| c[:stage] }
-			assert_equal [1, 2], @calls.first(2).map { |c| c[:invocation] }
+			assert_equal [1, 2], @calls.first(2).map { |c| c[:number] }
 			assert_nil @calls[0][:session_id]
 			assert_equal 'sess-1', @calls[1][:session_id], 'a relaunch resumes'
 		end
@@ -178,17 +178,17 @@ module Mill
 
 			assert_equal 1, ledger.strikes('plan')
 			assert_equal 0, ledger.strikes('review:plan')
-			assert_equal 2, ledger.invocations('review:plan'), 'the reviewer reviewed twice'
+			assert_equal 2, ledger.attempts('review:plan'), 'the reviewer reviewed twice'
 		end
 
-		# Every row is one launch: a rejection must not invent an invocation for a
+		# Every row is one launch: a rejection must not invent an attempt for a
 		# stage that has not re-run yet.
-		def test_a_rejection_does_not_skip_an_invocation_number
+		def test_a_rejection_does_not_skip_an_attempt_number
 			runner = runner_for(rejecting_run)
 			runner.call
 			plan_calls = @calls.select { |c| c[:stage] == 'plan' }
 
-			assert_equal [1, 2], plan_calls.map { |c| c[:invocation] }
+			assert_equal [1, 2], plan_calls.map { |c| c[:number] }
 			assert_equal 2, db[:stage_attempts].where(run_id: runner.run_id, stage: 'plan').count
 		end
 
@@ -283,22 +283,22 @@ module Mill
 
 		# Free is not unlimited. A stage that keeps producing nothing mill can use
 		# costs no strike per the ledger, but it must not loop forever either.
-		def test_the_invocation_cap_stops_the_runner_not_just_the_ledger
+		def test_the_attempt_cap_stops_the_runner_not_just_the_ledger
 			runner = runner_for(Array.new(20) { scripted(status: 'blocked', questions: ['?']) })
 
 			# Blocking halts on the first one, so drive the free path that repeats:
-			# an interrupted attempt costs an invocation and no strike.
+			# an interrupted attempt costs an number and no strike.
 			ledger = Mill::Ledger.new(db, runner.run_id)
-			(Mill::Ledger::MAX_INVOCATIONS).times { ledger.charge(stage: 'triage', outcome: :interrupted) }
+			(Mill::Ledger::MAX_ATTEMPTS).times { ledger.charge(stage: 'triage', outcome: :interrupted) }
 
 			assert_equal :blocked, runner.call
-			assert_match(/invocation cap/i, runner.state[:reason])
+			assert_match(/number cap/i, runner.state[:reason])
 			assert_empty @calls, 'a stage at its cap must not be launched again'
 		end
 
-		# Two strikes stop a stage well before the invocation cap does, so the cap
+		# Two strikes stop a stage well before the number cap does, so the cap
 		# is only reachable on the paths that cost nothing.
-		def test_strikes_stop_a_stage_before_the_invocation_cap_can
+		def test_strikes_stop_a_stage_before_the_attempt_cap_can
 			runner = runner_for(Array.new(20) { scripted(status: 'failed') })
 			runner.call
 

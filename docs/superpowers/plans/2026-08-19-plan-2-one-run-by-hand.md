@@ -697,25 +697,25 @@ most direct test in the suite: one case per row.
 - Test: `test/mill/test_ledger.rb`
 
 **The row-per-launch invariant.** Every row in `stage_attempts` is exactly one launch of one stage.
-That is what lets the invocation number name a log file and a verdict file without ambiguity. A
+That is what lets the attempt number name a log file and a verdict file without ambiguity. A
 rejection therefore does *not* insert a row for the stage it strikes — there has been no launch, so
 there is no log and no verdict, and a row here would make `plan-2.jsonl` a filename nothing ever
 wrote. The strike is recorded on the reviewer's own row, in a `struck_stage` column naming who pays.
-The invocation the reviewed stage owes is its re-launch, which happens next and inserts its own row.
+The attempt the reviewed stage owes is its re-launch, which happens next and inserts its own row.
 
 **Interfaces:**
 - Consumes: `Mill::Claude::Attempt` (Plan 1), the `stage_attempts` and `runs` tables.
 - Produces:
   - `Mill::Ledger.classify(attempt)` → one of `:ok`, `:blocked`, `:failed`, `:no_verdict`,
     `:crashed`
-  - `Mill::Ledger::COST` → Hash mapping an outcome symbol to `{ invocation: Integer, strike: Integer }`
-  - `Mill::Ledger.new(db, run_id)` with instance methods `invocations(stage)`, `strikes(stage)`,
-    `next_invocation(stage)`, `charge(stage:, outcome:, invocation: nil, **columns)` →
-    `{ invocation:, strike: }`, `out_of_strikes?(stage)`, `out_of_invocations?(stage)`,
+  - `Mill::Ledger::COST` → Hash mapping an outcome symbol to `{ attempt: Integer, strike: Integer }`
+  - `Mill::Ledger.new(db, run_id)` with instance methods `attempts(stage)`, `strikes(stage)`,
+    `next_attempt(stage)`, `charge(stage:, outcome:, attempt: nil, **columns)` →
+    `{ attempt:, strike: }`, `out_of_strikes?(stage)`, `out_of_attempts?(stage)`,
     `interruptions(stage)`, `out_of_interruptions?(stage)`, `reset_available?(stage)`, `reset!(stage)`
   - A rejection is recorded as `charge(stage: reviewer, outcome: :reviewed_clean, struck_stage:
     reviewed)` — one row, one launch, the strike attributed to someone else
-  - Constants `MAX_STRIKES = 2`, `MAX_INVOCATIONS = 8`, `MAX_INTERRUPTIONS = 3`
+  - Constants `MAX_STRIKES = 2`, `MAX_ATTEMPTS = 8`, `MAX_INTERRUPTIONS = 3`
 
 - [x] **Step 1: Write the migration**
 
@@ -723,7 +723,7 @@ Create `db/migrations/003_a_rejection_strikes_the_stage_it_reviewed.rb`:
 
 ```ruby
 # Every row in stage_attempts is exactly one launch, which is what lets the
-# invocation number name a log file and a verdict file. A reviewer that finds
+# attempt number name a log file and a verdict file. A reviewer that finds
 # something serious strikes the stage it reviewed, and that stage has not
 # launched again yet -- so the strike is recorded here, on the reviewer's own
 # row, rather than as a row for a launch that never happened.
@@ -795,18 +795,18 @@ module Mill
 			%i[failed crashed no_verdict artifact_bad].each do |outcome|
 				cost = Mill::Ledger::COST.fetch(outcome)
 
-				assert_equal 1, cost[:invocation], "#{outcome} must count as a launch"
+				assert_equal 1, cost[:attempt], "#{outcome} must count as a launch"
 				assert_equal 1, cost[:strike], "#{outcome} is the stage's own work being wrong"
 			end
 		end
 
-		# A rejection strikes the reviewed stage now; the invocation it owes is its
+		# A rejection strikes the reviewed stage now; the attempt it owes is its
 		# re-launch, which has not happened yet. Counting one here would name a log
-		# file nothing ever wrote and make the next real launch invocation 3.
+		# file nothing ever wrote and make the next real launch attempt 3.
 		def test_a_rejection_strikes_without_counting_a_launch
 			cost = Mill::Ledger::COST.fetch(:rejected)
 
-			assert_equal 0, cost[:invocation]
+			assert_equal 0, cost[:attempt]
 			assert_equal 1, cost[:strike]
 		end
 
@@ -815,33 +815,33 @@ module Mill
 			%i[blocked reviewed_clean stall_recovery resume_failed interrupted].each do |outcome|
 				cost = Mill::Ledger::COST.fetch(outcome)
 
-				assert_equal 1, cost[:invocation], "#{outcome} still names a log and a verdict"
+				assert_equal 1, cost[:attempt], "#{outcome} still names a log and a verdict"
 				assert_equal 0, cost[:strike], "#{outcome} was not the stage failing"
 			end
 		end
 
 		def test_waiting_behind_a_rate_limit_is_not_a_launch_at_all
-			assert_equal 0, Mill::Ledger::COST.fetch(:rate_limited)[:invocation]
+			assert_equal 0, Mill::Ledger::COST.fetch(:rate_limited)[:attempt]
 			assert_equal 0, Mill::Ledger::COST.fetch(:rate_limited)[:strike]
 		end
 
 		# --- accounting -----------------------------------------------------
 
-		def test_the_invocation_number_rises_on_every_launch
-			assert_equal 1, @ledger.next_invocation('plan')
+		def test_the_attempt_number_rises_on_every_launch
+			assert_equal 1, @ledger.next_attempt('plan')
 			@ledger.charge(stage: 'plan', outcome: :blocked)
 
-			assert_equal 2, @ledger.next_invocation('plan')
+			assert_equal 2, @ledger.next_attempt('plan')
 			@ledger.charge(stage: 'plan', outcome: :failed)
 
-			assert_equal 3, @ledger.next_invocation('plan')
+			assert_equal 3, @ledger.next_attempt('plan')
 		end
 
 		def test_strikes_rise_only_on_bad_work
 			3.times { @ledger.charge(stage: 'plan', outcome: :blocked) }
 
 			assert_equal 0, @ledger.strikes('plan')
-			assert_equal 3, @ledger.invocations('plan')
+			assert_equal 3, @ledger.attempts('plan')
 		end
 
 		def test_two_strikes_stops_the_stage
@@ -860,7 +860,7 @@ module Mill
 			@ledger.charge(stage: 'review:code', outcome: :reviewed_clean)
 			@ledger.charge(stage: 'review:code', outcome: :reviewed_clean)
 
-			assert_equal 3, @ledger.invocations('review:code'), 'three distinct launches'
+			assert_equal 3, @ledger.attempts('review:code'), 'three distinct launches'
 			assert_equal 1, @ledger.strikes('review:code'), 'only the crash was the reviewer failing'
 			refute @ledger.out_of_strikes?('review:code')
 			assert_equal 3, db[:stage_attempts].where(run_id: @run, stage: 'review:code').count
@@ -876,13 +876,13 @@ module Mill
 			assert_equal 0, @ledger.strikes('review:code')
 		end
 
-		# Every row is one launch. A rejection must not invent an invocation for a
+		# Every row is one launch. A rejection must not invent an attempt for a
 		# stage that has not run again yet.
-		def test_a_rejection_does_not_invent_an_invocation
+		def test_a_rejection_does_not_invent_an_attempt
 			@ledger.charge(stage: 'review:code', outcome: :reviewed_clean, struck_stage: 'implement')
 
-			assert_equal 0, @ledger.invocations('implement'), 'no launch happened, so no row'
-			assert_equal 1, @ledger.next_invocation('implement'), 'the re-launch is invocation 1'
+			assert_equal 0, @ledger.attempts('implement'), 'no launch happened, so no row'
+			assert_equal 1, @ledger.next_attempt('implement'), 'the re-launch is attempt 1'
 			assert_equal 1, db[:stage_attempts].where(run_id: @run).count
 		end
 
@@ -906,7 +906,7 @@ module Mill
 		def test_free_paths_are_still_bounded
 			8.times { @ledger.charge(stage: 'plan', outcome: :blocked) }
 
-			assert @ledger.out_of_invocations?('plan'), 'nothing may loop forever, even for free'
+			assert @ledger.out_of_attempts?('plan'), 'nothing may loop forever, even for free'
 		end
 
 		def test_interruptions_are_capped_separately
@@ -928,7 +928,7 @@ module Mill
 
 			refute @ledger.out_of_strikes?('plan')
 			assert_equal 0, @ledger.strikes('plan')
-			assert_equal 2, @ledger.invocations('plan'), 'a reset forgives strikes, not history'
+			assert_equal 2, @ledger.attempts('plan'), 'a reset forgives strikes, not history'
 		end
 
 		def test_a_stage_may_only_be_reset_once
@@ -971,37 +971,37 @@ require 'json'
 module Mill
 	# The single definition of what an attempt is and who pays for one.
 	#
-	# mill counts two separate things. The invocation number counts how many times
+	# mill counts two separate things. The attempt number counts how many times
 	# mill has launched a stage during a run; it goes up on every launch without
 	# exception, and it names the log file and the verdict. The strike count is the
 	# two-strikes rule, and it goes up only when the stage's own work was bad.
 	#
 	# Keeping them apart is what makes the ordinary case expressible: a reviewer
 	# that crashes, gets relaunched, finds a real problem, and reviews again is on
-	# invocation 3 with one strike, which is exactly the truth.
+	# attempt 3 with one strike, which is exactly the truth.
 	class Ledger
 		MAX_STRIKES = 2
-		MAX_INVOCATIONS = 8
+		MAX_ATTEMPTS = 8
 		MAX_INTERRUPTIONS = 3
 
 		# A strike means the work was wrong. Everything the machine did to a stage
 		# is free — a laptop that slept, a socket that died, a lock file left by a
 		# SIGKILL, and mill restarting are mill's problems, not the stage's.
 		COST = {
-			failed: { invocation: 1, strike: 1 },
-			crashed: { invocation: 1, strike: 1 },
-			no_verdict: { invocation: 1, strike: 1 },
-			artifact_bad: { invocation: 1, strike: 1 },
-			# The strike lands now; the invocation it owes is the re-launch itself,
+			failed: { attempt: 1, strike: 1 },
+			crashed: { attempt: 1, strike: 1 },
+			no_verdict: { attempt: 1, strike: 1 },
+			artifact_bad: { attempt: 1, strike: 1 },
+			# The strike lands now; the attempt it owes is the re-launch itself,
 			# which inserts its own row. See the row-per-launch invariant above.
-			rejected: { invocation: 0, strike: 1 },
-			ok: { invocation: 1, strike: 0 },
-			blocked: { invocation: 1, strike: 0 },
-			reviewed_clean: { invocation: 1, strike: 0 },
-			stall_recovery: { invocation: 1, strike: 0 },
-			resume_failed: { invocation: 1, strike: 0 },
-			interrupted: { invocation: 1, strike: 0 },
-			rate_limited: { invocation: 0, strike: 0 }
+			rejected: { attempt: 0, strike: 1 },
+			ok: { attempt: 1, strike: 0 },
+			blocked: { attempt: 1, strike: 0 },
+			reviewed_clean: { attempt: 1, strike: 0 },
+			stall_recovery: { attempt: 1, strike: 0 },
+			resume_failed: { attempt: 1, strike: 0 },
+			interrupted: { attempt: 1, strike: 0 },
+			rate_limited: { attempt: 0, strike: 0 }
 		}.freeze
 
 		# A process that died outranks whatever it managed to emit: mill has no
@@ -1024,7 +1024,7 @@ module Mill
 
 		def attempts(stage) = @db[:stage_attempts].where(run_id: @run_id, stage: stage)
 
-		def invocations(stage) = attempts(stage).count
+		def attempts(stage) = attempts(stage).count
 
 		# A stage is struck either by its own bad work, or by a reviewer that found
 		# something serious in it. The second is recorded on the reviewer's row,
@@ -1036,16 +1036,16 @@ module Mill
 
 		def interruptions(stage) = attempts(stage).where(status: 'interrupted').count
 
-		def next_invocation(stage) = invocations(stage) + 1
+		def next_attempt(stage) = attempts(stage) + 1
 
 		# Records one launch and returns what it cost. `stage` is who pays, which
 		# for a rejection is the stage that was reviewed rather than the reviewer.
-		def charge(stage:, outcome:, invocation: nil, **columns)
+		def charge(stage:, outcome:, attempt: nil, **columns)
 			cost = COST.fetch(outcome) { raise Mill::Error, "unknown outcome: #{outcome}" }
-			return cost if cost[:invocation].zero?
+			return cost if cost[:attempt].zero?
 
 			@db[:stage_attempts].insert(
-				run_id: @run_id, stage: stage, invocation: invocation || next_invocation(stage),
+				run_id: @run_id, stage: stage, attempt: attempt || next_attempt(stage),
 				nonce: columns.delete(:nonce) || '', status: outcome.to_s,
 				strike_charged: cost[:strike].positive?, started_at: Mill.now, **columns
 			)
@@ -1054,7 +1054,7 @@ module Mill
 
 		def out_of_strikes?(stage) = strikes(stage) >= MAX_STRIKES
 
-		def out_of_invocations?(stage) = invocations(stage) >= MAX_INVOCATIONS
+		def out_of_attempts?(stage) = attempts(stage) >= MAX_ATTEMPTS
 
 		def out_of_interruptions?(stage) = interruptions(stage) >= MAX_INTERRUPTIONS
 
@@ -1094,7 +1094,7 @@ Run: `bundle exec ruby -Ilib -Itest test/mill/test_ledger.rb`
 Expected: PASS, 21 runs, 0 failures
 
 If `test_a_reviewer_that_crashes_then_reviews_twice` fails on the unique index over
-`(run_id, stage, invocation)`, the bug is that `charge` computed the invocation number twice for one
+`(run_id, stage, attempt)`, the bug is that `charge` computed the attempt number twice for one
 launch — pass it explicitly from the runner rather than recomputing.
 
 - [x] **Step 6: Run the full suite and commit**
@@ -1104,7 +1104,7 @@ Run: `bundle exec rake test`
 ```bash
 git add db/migrations/003_a_rejection_strikes_the_stage_it_reviewed.rb lib/mill/ledger.rb \
 	lib/mill.rb test/mill/test_ledger.rb
-git commit -m "Add the attempt ledger: invocations count launches, strikes count bad work"
+git commit -m "Add the attempt ledger: attempts count launches, strikes count bad work"
 ```
 
 ---
@@ -1373,7 +1373,7 @@ Create `prompts/plan.md`:
 Turn the spec into a plan another agent can execute without asking anyone a question.
 
 **This is where every question should surface.** Each time the implementer blocks it costs hours
-of wall time and wastes every Opus invocation before it. Ask everything the pipeline will ever need
+of wall time and wastes every Opus call before it. Ask everything the pipeline will ever need
 to ask, once, in one batch, before you finish.
 
 ## The spec
@@ -1751,7 +1751,7 @@ description: Use when running as a mill stage - redefines every interactive gate
 You are a stage in mill's pipeline. There is no human at this terminal. Every skill you load was
 written for someone sitting in front of a terminal, and each one has at least one place where it
 tells you to ask and wait. **You cannot wait.** A process that waits for an answer here blocks
-forever and is eventually reaped as wedged, which costs an invocation and tells nobody anything.
+forever and is eventually reaped as wedged, which costs an attempt and tells nobody anything.
 
 ## The one substitution
 
@@ -2012,7 +2012,7 @@ lets the whole control plane be tested with no network and no `claude`.
   - `#step` → one of `:advanced`, `:rerun`, `:blocked`, `:failed`, `:done`
   - `#call` → the terminal symbol, looping until one is reached
   - `#state` → Hash with `:stage`, `:status`, `:questions`, `:reason`
-  - The launcher is called as `launcher.call(stage:, prompt:, invocation:, session_id:)` and must
+  - The launcher is called as `launcher.call(stage:, prompt:, attempt:, session_id:)` and must
     return an object shaped like `Mill::Claude::Attempt`.
 
 - [x] **Step 1: Write the failing test**
@@ -2048,7 +2048,7 @@ module Mill
 			result.define_singleton_method(:tokens) { { tokens_in: 1, tokens_out: 2 } }
 			result.define_singleton_method(:model) { 'claude-opus-5' }
 
-			Mill::Claude::Attempt.new(stage: nil, invocation: nil, nonce: 'n',
+			Mill::Claude::Attempt.new(stage: nil, attempt: nil, nonce: 'n',
 				result: result, verdict: verdict)
 		end
 
@@ -2057,8 +2057,8 @@ module Mill
 			@calls = []
 			run_id = create_run(repo_id: create_repo, route: route)
 			queue = script.dup
-			launcher = lambda do |stage:, prompt:, invocation:, session_id:|
-				@calls << { stage: stage, invocation: invocation, session_id: session_id, prompt: prompt }
+			launcher = lambda do |stage:, prompt:, attempt:, session_id:|
+				@calls << { stage: stage, attempt: attempt, session_id: session_id, prompt: prompt }
 				reply = queue.shift or raise "script exhausted at #{stage}"
 				reply.is_a?(Proc) ? reply.call(stage) : reply
 			end
@@ -2080,10 +2080,10 @@ module Mill
 			assert_equal Mill::Stages::ROUTES['plan'], @calls.map { |c| c[:stage] }
 		end
 
-		def test_every_stage_is_launched_at_invocation_one_on_a_clean_run
+		def test_every_stage_is_launched_as_attempt_one_on_a_clean_run
 			runner_for(Array.new(6) { ->(stage) { ok_for(stage) } }).call
 
-			assert_equal [1] * 6, @calls.map { |c| c[:invocation] }
+			assert_equal [1] * 6, @calls.map { |c| c[:attempt] }
 		end
 
 		def test_the_first_launch_of_a_stage_is_a_fresh_session
@@ -2127,7 +2127,7 @@ module Mill
 			runner.call
 
 			assert_equal %w[triage triage], @calls.first(2).map { |c| c[:stage] }
-			assert_equal [1, 2], @calls.first(2).map { |c| c[:invocation] }
+			assert_equal [1, 2], @calls.first(2).map { |c| c[:attempt] }
 			assert_equal 'sess-1', @calls[1][:session_id], 'a relaunch resumes'
 		end
 
@@ -2184,7 +2184,7 @@ module Mill
 
 			assert_equal 1, ledger.strikes('plan')
 			assert_equal 0, ledger.strikes('review:plan')
-			assert_equal 2, ledger.invocations('review:plan'), 'the reviewer reviewed twice'
+			assert_equal 2, ledger.attempts('review:plan'), 'the reviewer reviewed twice'
 		end
 
 		# The reviewer's notes reach the stage that has to act on them.
@@ -2242,17 +2242,17 @@ module Mill
 
 		# Free is not unlimited. A stage that keeps producing nothing mill can use
 		# costs no strike per the ledger, but it must not loop forever either.
-		def test_the_invocation_cap_stops_the_runner_not_just_the_ledger
+		def test_the_attempt_cap_stops_the_runner_not_just_the_ledger
 			runner = runner_for(Array.new(20) { scripted(valid: false) })
 
 			assert_equal :blocked, runner.call
-			assert_match(/invocation cap/i, runner.state[:reason])
-			assert_operator @calls.length, :<=, Mill::Ledger::MAX_INVOCATIONS
+			assert_match(/attempt cap/i, runner.state[:reason])
+			assert_operator @calls.length, :<=, Mill::Ledger::MAX_ATTEMPTS
 		end
 
-		# Two strikes stop a stage well before the invocation cap does, so the cap
+		# Two strikes stop a stage well before the attempt cap does, so the cap
 		# is only reachable on the paths that cost nothing.
-		def test_strikes_stop_a_stage_before_the_invocation_cap_can
+		def test_strikes_stop_a_stage_before_the_attempt_cap_can
 			runner = runner_for(Array.new(20) { scripted(status: 'failed') })
 			runner.call
 
@@ -2312,20 +2312,20 @@ module Mill
 		def step
 			return finish(:done) if @stage.nil?
 			return halt(:blocked, "#{@stage} has used both its strikes") if @ledger.out_of_strikes?(@stage)
-			return halt(:blocked, "#{@stage} hit its invocation cap") if @ledger.out_of_invocations?(@stage)
+			return halt(:blocked, "#{@stage} hit its attempt cap") if @ledger.out_of_attempts?(@stage)
 
-			invocation = @ledger.next_invocation(@stage)
-			attempt = launch(@stage, invocation)
-			outcome = settle(attempt, invocation)		# inserts the row
-			record(attempt, invocation)					# fills in what the launch produced
+			attempt = @ledger.next_attempt(@stage)
+			attempt = launch(@stage, attempt)
+			outcome = settle(attempt, attempt)		# inserts the row
+			record(attempt, attempt)					# fills in what the launch produced
 			outcome
 		end
 
 		private
 
-		def launch(stage, invocation)
+		def launch(stage, attempt)
 			@launcher.call(
-				stage: stage, invocation: invocation,
+				stage: stage, attempt: attempt,
 				prompt: Mill::Prompts.for(stage, prompt_context(stage)),
 				session_id: @sessions[stage]
 			)
@@ -2334,26 +2334,26 @@ module Mill
 		# A relaunch resumes the stage's own session so the agent remembers its
 		# work. The one exception is a verdict that failed validation: mill has no
 		# trustworthy account of what happened, so it starts fresh.
-		def settle(attempt, invocation)
+		def settle(attempt, attempt)
 			outcome = Mill::Ledger.classify(attempt)
 			@sessions[@stage] = outcome == :no_verdict ? nil : attempt.session_id
 
 			case outcome
 			when :blocked
-				@ledger.charge(stage: @stage, outcome: :blocked, invocation: invocation)
+				@ledger.charge(stage: @stage, outcome: :blocked, attempt: attempt)
 				halt(:blocked, "#{@stage} asked a question", questions: attempt.verdict.questions)
 			when :ok
 				remember(attempt)
-				reviewer?(@stage) && attempt.verdict.rejects? ? reject(attempt, invocation) : advance(invocation)
+				reviewer?(@stage) && attempt.verdict.rejects? ? reject(attempt, attempt) : advance(attempt)
 			else
-				@ledger.charge(stage: @stage, outcome: outcome, invocation: invocation)
+				@ledger.charge(stage: @stage, outcome: outcome, attempt: attempt)
 				:rerun
 			end
 		end
 
-		def advance(invocation)
+		def advance(attempt)
 			@ledger.charge(stage: @stage, outcome: reviewer?(@stage) ? :reviewed_clean : :ok,
-				invocation: invocation)
+				attempt: attempt)
 			@stage = Mill::Stages.next_stage(route, @stage)
 			@stage.nil? ? finish(:done) : :advanced
 		end
@@ -2361,11 +2361,11 @@ module Mill
 		# A reviewer that finds something serious is the reviewer succeeding: it
 		# costs the reviewer nothing and strikes the stage it reviewed. One row,
 		# for the launch that actually happened — the strike rides on it, attributed
-		# to whoever pays. The reviewed stage's invocation is its re-launch below.
-		def reject(attempt, invocation)
+		# to whoever pays. The reviewed stage's attempt is its re-launch below.
+		def reject(attempt, attempt)
 			reviewed = Mill::Stages.reviewed_stage(route, @stage)
 			@objections[reviewed] = attempt.verdict.serious_objections
-			@ledger.charge(stage: @stage, outcome: :reviewed_clean, invocation: invocation,
+			@ledger.charge(stage: @stage, outcome: :reviewed_clean, attempt: attempt,
 				struck_stage: reviewed)
 
 			return halt(:blocked, "#{reviewed} has used both its strikes") if @ledger.out_of_strikes?(reviewed)
@@ -2391,8 +2391,8 @@ module Mill
 			).compact
 		end
 
-		def record(attempt, invocation)
-			@db[:stage_attempts].where(run_id: @run_id, stage: @stage, invocation: invocation)
+		def record(attempt, attempt)
+			@db[:stage_attempts].where(run_id: @run_id, stage: @stage, attempt: attempt)
 				.update(session_id: attempt.session_id, model: attempt.model, log_path: attempt.log_path,
 					verdict_json: attempt.verdict.data.to_json, finished_at: Mill.now)
 		end
@@ -2566,10 +2566,10 @@ Add to `Rakefile`, inside `namespace :mill do`:
 		puts "run #{run_id} on #{located.branch}, worktree #{worktree}"
 
 		issue = github.issue(args[:repo], args[:number].to_i)
-		launcher = lambda do |stage:, prompt:, invocation:, session_id:|
-			log = File.join(Mill.home, 'logs', run_id.to_s, "#{Mill::Stages.slug(stage)}-#{invocation}.jsonl")
-			puts "-> #{stage} (invocation #{invocation})#{session_id ? ' resuming' : ''}"
-			Mill::Claude.new(stage).run(prompt, invocation: invocation, worktree: worktree,
+		launcher = lambda do |stage:, prompt:, attempt:, session_id:|
+			log = File.join(Mill.home, 'logs', run_id.to_s, "#{Mill::Stages.slug(stage)}-#{attempt}.jsonl")
+			puts "-> #{stage} (attempt #{attempt})#{session_id ? ' resuming' : ''}"
+			Mill::Claude.new(stage).run(prompt, attempt: attempt, worktree: worktree,
 				log_path: log, session_id: session_id)
 		end
 
@@ -2581,7 +2581,7 @@ Add to `Rakefile`, inside `namespace :mill do`:
 		puts "\n#{outcome}: #{runner.state[:reason]}"
 		runner.state[:questions].each { |q| puts "  ? #{q}" }
 		db[:stage_attempts].where(run_id: run_id).each do |a|
-			puts format('  %-14s inv %d  %-12s %s', a[:stage], a[:invocation], a[:status],
+			puts format('  %-14s inv %d  %-12s %s', a[:stage], a[:attempt], a[:status],
 				a[:strike_charged] ? 'STRIKE' : '')
 		end
 		exit 1 unless outcome == :done
@@ -2642,7 +2642,7 @@ asked? Are the tests real? Does the body say what happened, including any object
 ls ~/.mill/logs/<run-id>/
 ```
 
-For each stage, check the verdict validated first time. A stage that took two invocations for a
+For each stage, check the verdict validated first time. A stage that took two attempts for a
 reason that is not in the ledger's cost table is a bug in the runner, not in the stage.
 
 - [ ] **Step 5: Record what the rehearsal taught**
@@ -2676,13 +2676,13 @@ read the gap as an omission.
 
 **Amended 2026-08-19, before execution.** The first draft had `reject` insert a `stage_attempts`
 row for the stage it struck. That broke the row-per-launch invariant: the reviewed stage would show
-an invocation with no log file and no verdict, and its real re-launch would be numbered one higher,
+an attempt with no log file and no verdict, and its real re-launch would be numbered one higher,
 so log filenames skipped. The strike now rides on the reviewer's own row via `struck_stage`, and
-`COST[:rejected]` counts no invocation. Task 7's invocation-cap test was also rewritten — it drove
+`COST[:rejected]` counts no attempt. Task 7's attempt-cap test was also rewritten — it drove
 the ledger directly rather than the runner, so it asserted nothing about the thing it named.
 
 **Interfaces checked across tasks.** `Mill::Git.added_files` (Task 2) is called by `Mill::Spec.locate`
 (Task 3) with the same arity. `Mill::Ledger#charge` (Task 4) is called by `Mill::Runner` (Task 7) with
-`stage:`, `outcome:`, `invocation:`. `Mill::Prompts.for` (Task 5) is called by `Mill::Runner` with a
+`stage:`, `outcome:`, `attempt:`. `Mill::Prompts.for` (Task 5) is called by `Mill::Runner` with a
 stage and a context Hash. `Mill::Claude::Attempt`'s members — `verdict`, `result`, `session_id`,
 `model`, `tokens`, `log_path` — are all read by the runner and all exist from Plan 1.

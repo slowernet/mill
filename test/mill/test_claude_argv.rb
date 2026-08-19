@@ -128,7 +128,7 @@ module Mill
 
 				assert_equal 'object', schema['type']
 				assert_equal [stage], schema.dig('properties', 'stage', 'enum')
-				assert_equal %w[stage invocation nonce status summary].sort, schema['required'].sort
+				assert_equal %w[stage attempt nonce status summary].sort, schema['required'].sort
 				refute schema['additionalProperties'], 'a stage must not invent fields'
 			end
 		end

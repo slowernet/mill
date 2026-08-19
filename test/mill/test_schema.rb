@@ -62,12 +62,12 @@ module Mill
 			end
 		end
 
-		# The invocation number names the log and the verdict, so two launches of
+		# The number number names the log and the verdict, so two launches of
 		# one stage can never collide.
-		def test_stage_invocations_are_unique_per_run
+		def test_stage_attempts_are_numbered_uniquely_per_run
 			repo = create_repo
 			run = create_run(repo_id: repo)
-			attempt = { run_id: run, stage: 'plan', invocation: 1, nonce: 'abc', started_at: Mill.now }
+			attempt = { run_id: run, stage: 'plan', number: 1, nonce: 'abc', started_at: Mill.now }
 
 			db[:stage_attempts].insert(**attempt)
 
@@ -76,20 +76,20 @@ module Mill
 			end
 		end
 
-		def test_a_stage_may_be_relaunched_under_a_new_invocation
+		def test_a_stage_may_be_relaunched_under_a_new_number
 			repo = create_repo
 			run = create_run(repo_id: repo)
 
-			db[:stage_attempts].insert(run_id: run, stage: 'plan', invocation: 1, nonce: 'a', started_at: Mill.now)
+			db[:stage_attempts].insert(run_id: run, stage: 'plan', number: 1, nonce: 'a', started_at: Mill.now)
 
-			assert db[:stage_attempts].insert(run_id: run, stage: 'plan', invocation: 2, nonce: 'b', started_at: Mill.now)
+			assert db[:stage_attempts].insert(run_id: run, stage: 'plan', number: 2, nonce: 'b', started_at: Mill.now)
 		end
 
-		# Free paths cost an invocation and no strike; only bad work strikes.
+		# Free paths cost an number and no strike; only bad work strikes.
 		def test_attempts_default_to_no_strike_and_no_tokens
 			repo = create_repo
 			run = create_run(repo_id: repo)
-			id = db[:stage_attempts].insert(run_id: run, stage: 'triage', invocation: 1, nonce: 'n', started_at: Mill.now)
+			id = db[:stage_attempts].insert(run_id: run, stage: 'triage', number: 1, nonce: 'n', started_at: Mill.now)
 			row = db[:stage_attempts][id: id]
 
 			refute row[:strike_charged]
@@ -103,7 +103,7 @@ module Mill
 		def test_output_tokens_may_be_unmeasured
 			repo = create_repo
 			run = create_run(repo_id: repo)
-			id = db[:stage_attempts].insert(run_id: run, stage: 'plan', invocation: 1, nonce: 'n',
+			id = db[:stage_attempts].insert(run_id: run, stage: 'plan', number: 1, nonce: 'n',
 				started_at: Mill.now, tokens_in: 5, tokens_out: nil)
 
 			assert_nil db[:stage_attempts][id: id][:tokens_out]
@@ -115,7 +115,7 @@ module Mill
 			run = create_run(repo_id: repo)
 
 			assert_raises(Sequel::NotNullConstraintViolation) do
-				db[:stage_attempts].insert(run_id: run, stage: 'plan', invocation: 9, nonce: 'n',
+				db[:stage_attempts].insert(run_id: run, stage: 'plan', number: 9, nonce: 'n',
 					started_at: Mill.now, cache_read_tokens: nil)
 			end
 		end

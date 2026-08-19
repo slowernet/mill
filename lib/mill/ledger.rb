@@ -4,22 +4,23 @@ module Mill
 	# The single definition of what an attempt is and who pays for one. Every
 	# recovery path in mill ends here.
 	#
-	# mill counts two separate things. The invocation number counts how many times
-	# mill has launched a stage during a run; it goes up on every launch without
-	# exception, and it names the log file and the verdict file. The strike count
-	# is the two-strikes rule, and it goes up only when the stage's own work was bad.
+	# mill counts two separate things. **Attempts** count how many times mill has
+	# launched a stage during a run: one attempt is one launch, and its number
+	# names the log file and is stamped in the verdict. It goes up on every launch
+	# without exception. **Strikes** are the two-strikes rule, and go up only when
+	# the stage's own work was bad.
 	#
 	# Keeping them apart is what makes the ordinary case expressible: a reviewer
 	# that crashes, gets relaunched, finds a real problem, and reviews again is on
-	# invocation 3 with one strike, which is exactly the truth.
+	# its third attempt with one strike, which is exactly the truth.
 	#
-	# **Every row in stage_attempts is exactly one launch.** That is what lets the
-	# invocation number name a file. A rejection therefore inserts no row for the
-	# stage it strikes — there was no launch, so there is no log and no verdict —
-	# and rides on the reviewer's row instead, through `struck_stage`.
+	# **Every row in stage_attempts is exactly one attempt.** That is what lets the
+	# number name a file. A rejection therefore inserts no row for the stage it
+	# strikes — there was no launch, so there is no log and no verdict — and rides
+	# on the reviewer's row instead, through `struck_stage`.
 	class Ledger
 		MAX_STRIKES = 2
-		MAX_INVOCATIONS = 8
+		MAX_ATTEMPTS = 8
 		MAX_INTERRUPTIONS = 3
 
 		# A strike means the work was wrong. Everything the machine did to a stage
@@ -28,20 +29,20 @@ module Mill
 		# charging for them produces a run that dies for a reason nobody can
 		# reconstruct from the log.
 		COST = {
-			failed: { invocation: 1, strike: 1 },
-			crashed: { invocation: 1, strike: 1 },
-			no_verdict: { invocation: 1, strike: 1 },
-			artifact_bad: { invocation: 1, strike: 1 },
-			# The strike lands now; the invocation it owes is the re-launch itself,
-			# which inserts its own row. See the row-per-launch note above.
-			rejected: { invocation: 0, strike: 1 },
-			ok: { invocation: 1, strike: 0 },
-			blocked: { invocation: 1, strike: 0 },
-			reviewed_clean: { invocation: 1, strike: 0 },
-			stall_recovery: { invocation: 1, strike: 0 },
-			resume_failed: { invocation: 1, strike: 0 },
-			interrupted: { invocation: 1, strike: 0 },
-			rate_limited: { invocation: 0, strike: 0 }
+			failed: { attempt: 1, strike: 1 },
+			crashed: { attempt: 1, strike: 1 },
+			no_verdict: { attempt: 1, strike: 1 },
+			artifact_bad: { attempt: 1, strike: 1 },
+			# The strike lands now; the attempt it owes is the re-launch itself,
+			# which inserts its own row. See the row-per-attempt note above.
+			rejected: { attempt: 0, strike: 1 },
+			ok: { attempt: 1, strike: 0 },
+			blocked: { attempt: 1, strike: 0 },
+			reviewed_clean: { attempt: 1, strike: 0 },
+			stall_recovery: { attempt: 1, strike: 0 },
+			resume_failed: { attempt: 1, strike: 0 },
+			interrupted: { attempt: 1, strike: 0 },
+			rate_limited: { attempt: 0, strike: 0 }
 		}.freeze
 
 		# A process that died outranks whatever it managed to emit: mill has no
@@ -62,55 +63,55 @@ module Mill
 			@run_id = run_id
 		end
 
-		def attempts(stage) = @db[:stage_attempts].where(run_id: @run_id, stage: stage)
+		def rows(stage) = @db[:stage_attempts].where(run_id: @run_id, stage: stage)
 
-		# Every guard the runner checks before a launch, in one pass. Asking
+		# Every guard the runner checks before an attempt, in one pass. Asking
 		# separately meant four COUNTs per step, two of them the same query.
-		Tally = Struct.new(:invocations, :strikes, :interruptions, keyword_init: true) do
+		Tally = Struct.new(:attempts, :strikes, :interruptions, keyword_init: true) do
 			def out_of_strikes? = strikes >= MAX_STRIKES
-			def out_of_invocations? = invocations >= MAX_INVOCATIONS
+			def out_of_attempts? = attempts >= MAX_ATTEMPTS
 			def out_of_interruptions? = interruptions >= MAX_INTERRUPTIONS
-			def next_invocation = invocations + 1
+			def next_attempt = attempts + 1
 		end
 
 		def tally(stage)
-			rows = attempts(stage).select_map(%i[strike_charged status])
+			rows = rows(stage).select_map(%i[strike_charged status])
 			Tally.new(
-				invocations: rows.length,
+				attempts: rows.length,
 				strikes: rows.count { |charged, _| charged } +
 					@db[:stage_attempts].where(run_id: @run_id, struck_stage: stage).count,
 				interruptions: rows.count { |_, status| status == 'interrupted' }
 			)
 		end
 
-		def invocations(stage) = attempts(stage).count
+		def attempts(stage) = rows(stage).count
 
 		# A stage is struck either by its own bad work, or by a reviewer that found
 		# something serious in it. The second is recorded on the reviewer's row,
 		# because that is the row belonging to a launch that actually happened.
 		def strikes(stage)
-			attempts(stage).where(strike_charged: true).count +
+			rows(stage).where(strike_charged: true).count +
 				@db[:stage_attempts].where(run_id: @run_id, struck_stage: stage).count
 		end
 
-		def interruptions(stage) = attempts(stage).where(status: 'interrupted').count
+		def interruptions(stage) = rows(stage).where(status: 'interrupted').count
 
-		def next_invocation(stage) = invocations(stage) + 1
+		def next_attempt(stage) = attempts(stage) + 1
 
-		# Records one launch and returns what it cost. A rejection is charged as
+		# Records one attempt and returns what it cost. A rejection is charged as
 		# `charge(stage: reviewer, outcome: :reviewed_clean, struck_stage: reviewed)`
 		# — one row, one launch, the strike attributed to whoever pays.
 		#
-		# Everything the launch produced goes in this one insert. An earlier draft
+		# Everything the attempt produced goes in this one insert. An earlier draft
 		# inserted here and updated the row afterwards, which meant reversing two
 		# lines in the runner silently matched zero rows: every attempt lost its
 		# session id, and resume broke rather than anything failing loudly.
-		def charge(stage:, outcome:, invocation: nil, attempt: nil, **columns)
+		def charge(stage:, outcome:, number: nil, attempt: nil, **columns)
 			cost = COST.fetch(outcome) { raise Mill::Error, "unknown outcome: #{outcome}" }
-			return cost if cost[:invocation].zero?
+			return cost if cost[:attempt].zero?
 
 			@db[:stage_attempts].insert(
-				run_id: @run_id, stage: stage, invocation: invocation || next_invocation(stage),
+				run_id: @run_id, stage: stage, number: number || next_attempt(stage),
 				status: outcome.to_s, strike_charged: cost[:strike].positive?, started_at: Mill.now,
 				**attempt_columns(attempt), **columns
 			)
@@ -119,7 +120,7 @@ module Mill
 
 		def out_of_strikes?(stage) = strikes(stage) >= MAX_STRIKES
 
-		def out_of_invocations?(stage) = invocations(stage) >= MAX_INVOCATIONS
+		def out_of_attempts?(stage) = attempts(stage) >= MAX_ATTEMPTS
 
 		def out_of_interruptions?(stage) = interruptions(stage) >= MAX_INTERRUPTIONS
 

@@ -24,7 +24,7 @@ module Mill
 			config = Mill::Stages[stage]
 			properties = {
 				stage: { type: 'string', enum: [stage] },
-				invocation: { type: 'integer' },
+				attempt: { type: 'integer' },
 				nonce: { type: 'string' },
 				status: { type: 'string', enum: STATUSES },
 				summary: { type: 'string' },
@@ -35,7 +35,7 @@ module Mill
 			properties[:objections] = objections_schema if stage.start_with?('review:')
 
 			{ type: 'object', properties: properties,
-			  required: %w[stage invocation nonce status summary], additionalProperties: false }
+			  required: %w[stage attempt nonce status summary], additionalProperties: false }
 		end
 
 		# The severity enum lives here rather than only in mill's own check: the
@@ -60,14 +60,14 @@ module Mill
 		# with no tree, but a caller that simply forgets it would silently skip the
 		# existence, emptiness, and symlink checks — and a plan stage that wrote
 		# nothing would validate clean.
-		def self.validate(raw, stage:, invocation:, nonce:, worktree:)
-			new(raw, stage: stage, invocation: invocation, nonce: nonce, worktree: worktree).tap(&:validate)
+		def self.validate(raw, stage:, number:, nonce:, worktree:)
+			new(raw, stage: stage, number: number, nonce: nonce, worktree: worktree).tap(&:validate)
 		end
 
-		def initialize(raw, stage:, invocation:, nonce:, worktree:)
+		def initialize(raw, stage:, number:, nonce:, worktree:)
 			@raw = raw
 			@stage = stage
-			@invocation = invocation
+			@number = number
 			@nonce = nonce
 			@worktree = worktree
 			@errors = []
@@ -142,7 +142,7 @@ module Mill
 		# earlier launch.
 		def check_envelope
 			fail!("stage mismatch: expected #{@stage}, got #{@data[:stage].inspect}") if @data[:stage] != @stage
-			fail!("invocation mismatch: expected #{@invocation}, got #{@data[:invocation].inspect}") if @data[:invocation] != @invocation
+			fail!("attempt mismatch: expected #{@number}, got #{@data[:attempt].inspect}") if @data[:attempt] != @number
 			fail!('nonce mismatch') if @data[:nonce] != @nonce
 		end
 

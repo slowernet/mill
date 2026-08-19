@@ -64,14 +64,14 @@ namespace :mill do
 		puts "run #{run.run_id} on #{run.branch}, spec #{run.spec_path}"
 		puts "worktree #{run.worktree}\n\n"
 
-		outcome = run.call do |stage, invocation, resuming|
-			puts "-> #{stage} (invocation #{invocation})#{resuming ? ' resuming' : ''}"
+		outcome = run.call do |stage, number, resuming|
+			puts "-> #{stage} (number #{number})#{resuming ? ' resuming' : ''}"
 		end
 
 		puts "\n#{outcome}: #{run.runner.state[:reason]}"
 		run.runner.state[:questions].each { |q| puts "  ? #{q}" }
 		run.attempts.each do |a|
-			puts format('  %-16s inv %d  %-16s %s%s', a[:stage], a[:invocation], a[:status],
+			puts format('  %-16s inv %d  %-16s %s%s', a[:stage], a[:number], a[:status],
 				a[:strike_charged] ? 'STRIKE ' : '',
 				a[:struck_stage] ? "struck #{a[:struck_stage]}" : '')
 		end
@@ -90,10 +90,10 @@ namespace :mill do
 
 			attempt = Mill::Claude.new(stage).run(
 				'Read README.md in this directory and report what it says. Change nothing.',
-				invocation: 1, worktree: worktree, log_path: log
+				number: 1, worktree: worktree, log_path: log
 			)
 
-			puts "stage      #{attempt.stage} (invocation #{attempt.invocation}, nonce #{attempt.nonce})"
+			puts "stage      #{attempt.stage} (number #{attempt.number}, nonce #{attempt.nonce})"
 			puts "model      #{attempt.model}"
 			puts "session    #{attempt.session_id}"
 			puts "verdict    #{attempt.verdict.valid? ? attempt.verdict.status : 'INVALID'}"

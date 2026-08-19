@@ -2,7 +2,7 @@ require 'json'
 require 'open3'
 
 module Mill
-	# Every `gh` invocation mill makes, REST and GraphQL. Nothing else in the
+	# Every `gh` call mill makes, REST and GraphQL. Nothing else in the
 	# codebase shells out to gh — that is what makes the collaborator rule, the
 	# comment marker, and the board-writer rule enforceable in one place.
 	#

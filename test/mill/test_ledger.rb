@@ -52,18 +52,18 @@ module Mill
 			%i[failed crashed no_verdict artifact_bad].each do |outcome|
 				cost = Mill::Ledger::COST.fetch(outcome)
 
-				assert_equal 1, cost[:invocation], "#{outcome} must count as a launch"
+				assert_equal 1, cost[:attempt], "#{outcome} must count as a launch"
 				assert_equal 1, cost[:strike], "#{outcome} is the stage's own work being wrong"
 			end
 		end
 
-		# A rejection strikes the reviewed stage now; the invocation it owes is its
+		# A rejection strikes the reviewed stage now; the attempt it owes is its
 		# re-launch, which has not happened yet. Counting one here would name a log
-		# file nothing ever wrote and make the next real launch invocation 3.
+		# file nothing ever wrote and make the next real launch attempt 3.
 		def test_a_rejection_strikes_without_counting_a_launch
 			cost = Mill::Ledger::COST.fetch(:rejected)
 
-			assert_equal 0, cost[:invocation]
+			assert_equal 0, cost[:attempt]
 			assert_equal 1, cost[:strike]
 		end
 
@@ -72,33 +72,33 @@ module Mill
 			%i[blocked reviewed_clean stall_recovery resume_failed interrupted].each do |outcome|
 				cost = Mill::Ledger::COST.fetch(outcome)
 
-				assert_equal 1, cost[:invocation], "#{outcome} still names a log and a verdict"
+				assert_equal 1, cost[:attempt], "#{outcome} still names a log and a verdict"
 				assert_equal 0, cost[:strike], "#{outcome} was not the stage failing"
 			end
 		end
 
 		def test_waiting_behind_a_rate_limit_is_not_a_launch_at_all
-			assert_equal 0, Mill::Ledger::COST.fetch(:rate_limited)[:invocation]
+			assert_equal 0, Mill::Ledger::COST.fetch(:rate_limited)[:attempt]
 			assert_equal 0, Mill::Ledger::COST.fetch(:rate_limited)[:strike]
 		end
 
 		# --- accounting -----------------------------------------------------
 
-		def test_the_invocation_number_rises_on_every_launch
-			assert_equal 1, @ledger.next_invocation('plan')
+		def test_the_attempt_number_rises_on_every_launch
+			assert_equal 1, @ledger.next_attempt('plan')
 			@ledger.charge(stage: 'plan', outcome: :blocked)
 
-			assert_equal 2, @ledger.next_invocation('plan')
+			assert_equal 2, @ledger.next_attempt('plan')
 			@ledger.charge(stage: 'plan', outcome: :failed)
 
-			assert_equal 3, @ledger.next_invocation('plan')
+			assert_equal 3, @ledger.next_attempt('plan')
 		end
 
 		def test_strikes_rise_only_on_bad_work
 			3.times { @ledger.charge(stage: 'plan', outcome: :blocked) }
 
 			assert_equal 0, @ledger.strikes('plan')
-			assert_equal 3, @ledger.invocations('plan')
+			assert_equal 3, @ledger.attempts('plan')
 		end
 
 		def test_two_strikes_stops_the_stage
@@ -118,7 +118,7 @@ module Mill
 			@ledger.charge(stage: 'review:code', outcome: :reviewed_clean)
 			@ledger.charge(stage: 'review:code', outcome: :reviewed_clean)
 
-			assert_equal 3, @ledger.invocations('review:code'), 'three distinct launches'
+			assert_equal 3, @ledger.attempts('review:code'), 'three distinct launches'
 			assert_equal 1, @ledger.strikes('review:code'), 'only the crash was the reviewer failing'
 			refute @ledger.out_of_strikes?('review:code')
 			assert_equal 3, db[:stage_attempts].where(run_id: @run, stage: 'review:code').count
@@ -134,13 +134,13 @@ module Mill
 			assert_equal 0, @ledger.strikes('review:code')
 		end
 
-		# Every row is one launch. A rejection must not invent an invocation for a
+		# Every row is one launch. A rejection must not invent an attempt for a
 		# stage that has not run again yet.
-		def test_a_rejection_does_not_invent_an_invocation
+		def test_a_rejection_does_not_invent_an_attempt
 			@ledger.charge(stage: 'review:code', outcome: :reviewed_clean, struck_stage: 'implement')
 
-			assert_equal 0, @ledger.invocations('implement'), 'no launch happened, so no row'
-			assert_equal 1, @ledger.next_invocation('implement'), 'the re-launch is invocation 1'
+			assert_equal 0, @ledger.attempts('implement'), 'no launch happened, so no row'
+			assert_equal 1, @ledger.next_attempt('implement'), 'the re-launch is attempt 1'
 			assert_equal 1, db[:stage_attempts].where(run_id: @run).count
 		end
 
@@ -155,7 +155,7 @@ module Mill
 		def test_free_paths_are_still_bounded
 			8.times { @ledger.charge(stage: 'plan', outcome: :blocked) }
 
-			assert @ledger.out_of_invocations?('plan'), 'nothing may loop forever, even for free'
+			assert @ledger.out_of_attempts?('plan'), 'nothing may loop forever, even for free'
 		end
 
 		def test_interruptions_are_capped_separately
@@ -181,7 +181,7 @@ module Mill
 
 			refute @ledger.out_of_strikes?('plan')
 			assert_equal 0, @ledger.strikes('plan')
-			assert_equal 2, @ledger.invocations('plan'), 'a reset forgives strikes, not history'
+			assert_equal 2, @ledger.attempts('plan'), 'a reset forgives strikes, not history'
 		end
 
 		# A reset has to forgive strikes charged from someone else's row too.
@@ -191,7 +191,7 @@ module Mill
 
 			assert_equal 0, @ledger.strikes('implement')
 			refute @ledger.out_of_strikes?('implement')
-			assert_equal 2, @ledger.invocations('review:code'), 'the reviewer still reviewed twice'
+			assert_equal 2, @ledger.attempts('review:code'), 'the reviewer still reviewed twice'
 		end
 
 		def test_a_stage_may_only_be_reset_once

@@ -17,7 +17,7 @@ module Mill
 		# What one launch produced. `ok?` is deliberately narrow: a launch is good
 		# only when the process ended cleanly *and* left a verdict that validates.
 		# Neither half implies the other, and silence is never success.
-		Attempt = Struct.new(:stage, :invocation, :nonce, :result, :verdict, keyword_init: true) do
+		Attempt = Struct.new(:stage, :number, :nonce, :result, :verdict, keyword_init: true) do
 			def ok? = result.success? && verdict.valid? && verdict.status == 'ok'
 			def blocked? = verdict.valid? && verdict.blocked?
 			def rejects? = verdict.valid? && verdict.rejects?
@@ -81,14 +81,14 @@ module Mill
 		#
 		# `worktree` is both the stage's working directory (layer 1's real
 		# filesystem boundary) and the root the artifact must resolve inside.
-		def run(prompt, invocation:, worktree:, log_path:, session_id: nil, env: {}, secrets: [])
+		def run(prompt, number:, worktree:, log_path:, session_id: nil, env: {}, secrets: [])
 			nonce = self.class.nonce
 			spawn = Mill::Spawn.new(log_path: log_path, chdir: worktree, secrets: secrets)
-			result = spawn.run(argv(envelope(prompt, invocation, nonce), session_id: session_id), env: env)
+			result = spawn.run(argv(envelope(prompt, number, nonce), session_id: session_id), env: env)
 
-			Attempt.new(stage: stage, invocation: invocation, nonce: nonce, result: result,
+			Attempt.new(stage: stage, number: number, nonce: nonce, result: result,
 				verdict: Mill::Verdict.validate(result.stream.verdict_payload, stage: stage,
-					invocation: invocation, nonce: nonce, worktree: worktree))
+					number: number, nonce: nonce, worktree: worktree))
 		end
 
 		# mill owns the envelope; the stage prompt owns everything above it.
@@ -97,7 +97,7 @@ module Mill
 		# to argue a model out of narrating — an earlier version spent two pages on
 		# that and still lost, twice, on the first real run. What is left is the
 		# part a schema cannot express: what each field *means*, and when to block.
-		def envelope(prompt, invocation, nonce)
+		def envelope(prompt, number, nonce)
 			<<~ENVELOPE
 				#{prompt}
 
@@ -106,7 +106,7 @@ module Mill
 				Finish by reporting your verdict through the structured output tool. mill reads it
 				directly; it is not a message to a person.
 
-				- `stage` is #{stage.to_json}, `invocation` is #{invocation}, and `nonce` is
+				- `stage` is #{stage.to_json}, `attempt` is #{number}, and `nonce` is
 				  #{nonce.to_json}. Copy all three exactly. They are how mill knows this verdict
 				  came from this launch and not an earlier one.
 				- `status` is `ok` only for work you finished and verified. `blocked` if you need a

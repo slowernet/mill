@@ -136,7 +136,7 @@ design session." mill declining to guess is a feature.
    are the durable record. Run state — route, branch, worktree, stage, session id, attempt
    counts — exists only in SQLite and is *not* disposable.
 2. **Silence is never success.** Every attempt must produce a verdict proving it ran: correct
-   stage, correct invocation, correct nonce.
+   stage, correct attempt, correct nonce.
 3. **The line can always stop.** Any stage may emit questions and block rather than guess.
 4. **Fail closed.** An unrecognised tool call, an unmatched verdict, an unprepared repo, or an
    unreachable GitHub all halt. None proceeds on an assumption.
@@ -156,7 +156,7 @@ Five components. Only two touch the outside world.
 | `Mill::Supervisor` | Claim work up to the cap, prepare repos, manage worktrees, reap process groups, hold the power assertion | the DB, git, the machine's power state |
 | `Mill::Runner` | Walk the stage graph for one run | the graph, `Mill::Claude` |
 | `Mill::Claude` | Build argv, spawn a process group, tee the log, accumulate cost, validate the verdict | Claude Code |
-| `Mill::Github` | Every `gh` invocation, REST and GraphQL | GitHub |
+| `Mill::Github` | Every `gh` attempt, REST and GraphQL | GitHub |
 
 `Mill::Github` is the single seam for **mill's own** GitHub access. It is not the only path:
 the `pr` and `push` stages run `gh` inside the worktree with a deliberately narrow token. See
@@ -208,14 +208,14 @@ defensible; pick one before Plan 1 rather than growing both.
 ~/.mill/settings/<stage>.json                    permission rulesets, outside every worktree
 ~/.mill/secrets/                                 stage token, per-repo env files
 ~/.mill/worktrees/<repo>/<run-id>/               one worktree per run
-~/.mill/logs/<run-id>/<stage>-<invocation>.jsonl  raw stream-json per attempt
+~/.mill/logs/<run-id>/<stage>-<number>.jsonl  raw stream-json per attempt
 ```
 
 `~/.mill` is `0700`. Logs and settings live outside the worktree deliberately: both are things the
 agent could otherwise rewrite.
 
 **The verdict is a column, not a file.** An earlier draft wrote each one to
-`~/.mill/runs/<run-id>/verdict-<stage>-<invocation>.json` so a crashed run stayed readable. It goes
+`~/.mill/runs/<run-id>/verdict-<stage>-<number>.json` so a crashed run stayed readable. It goes
 to `stage_attempts.verdict_json` instead: that is what the UI reads anyway, it survives a crash at
 least as well, and it means one fewer path a future change could point at the worktree by mistake.
 The reason the verdict lives outside the repo is unchanged — mill is the only writer, so no stage
@@ -581,7 +581,7 @@ mill is the only writer, so no stage can commit a verdict and no later checkout 
 ```json
 {
   "stage": "plan",
-  "invocation": 1,
+  "attempt": 1,
   "nonce": "8f3c1a…",
   "status": "ok" | "blocked" | "failed",
   "artifact": "docs/superpowers/plans/2026-08-06-foo.md",
@@ -595,7 +595,7 @@ mill is the only writer, so no stage can commit a verdict and no later checkout 
 mill validates before accepting:
 
 - A stage that ends without a final structured message has failed. Silence is never success.
-- `stage`, `invocation`, and `nonce` must match this spawn. mill generates a fresh nonce each
+- `stage`, `attempt`, and `nonce` must match this spawn. mill generates a fresh nonce each
   time and passes it in the prompt.
 - `artifact`, if present, must resolve inside the worktree, must not traverse a symlink, must
   match the stage's declared pattern, and must exist and be non-empty.
@@ -686,10 +686,10 @@ pipeline.
 
 **mill counts two separate things.**
 
-**The invocation number** counts how many times mill has launched a stage during a run. It goes up
-on every single launch, with no exceptions. It names the log file and the verdict file, and it is
-the number stamped in the verdict envelope, so no two launches of one stage can be confused for
-each other or overwrite each other's record.
+**The attempt count.** One attempt is one launch of one stage: one process group, one log, one
+verdict, one row in `stage_attempts`. It goes up on every single launch, with no exceptions, and
+the attempt's number is what names its log and is stamped in its verdict — so no two launches of
+one stage can be confused for each other or overwrite each other's record.
 
 **The strike count** is the two-strikes rule. It goes up only when the stage's own work was judged
 bad. At two strikes the run blocks.
@@ -698,12 +698,12 @@ Keeping them apart is what makes the ordinary case expressible at all. `review:c
 gets relaunched, and finds a serious problem; `implement` fixes it; the code now has to be
 reviewed again. Under one number the reviewer had already spent both its attempts and mill would
 block a perfectly healthy run — and two clean reviews would both call themselves attempt 1 and
-write to the same place. Under two numbers the reviewer is on invocation 3 with one strike, which
+write to the same place. Under two numbers the reviewer is on attempt 3 with one strike, which
 is exactly the truth.
 
 **What each ending costs:**
 
-| How the launch ended | Invocation | Strike |
+| How the launch ended | Attempt | Strike |
 |---|---|---|
 | Stage reported `failed` | +1 | +1 |
 | Stage crashed, or exited non-zero | +1 | +1 |
@@ -730,7 +730,7 @@ rounds of questions would exhaust itself by doing its job.
 
 **Free is not unlimited.** Every strike-free path has its own cap, so nothing can loop forever:
 stall recoveries are capped per launch, interruptions are capped per stage, and the total
-invocations for one stage in one run are capped well above any legitimate sequence. Hitting any of
+attempts for one stage in one run are capped well above any legitimate sequence. Hitting any of
 those caps blocks the run and says which cap it was.
 
 **The reviewer has its own counters.** A reviewer that crashes or returns an unusable verdict is
@@ -882,7 +882,7 @@ difference is what gets injected. Verified: `--resume` returns the *same* sessio
 requires `--fork-session`), and a transcript whose last record is a `tool_use` with no matching
 `tool_result` — the state a SIGKILL produces — resumes successfully, because the CLI repairs
 the dangling call. If `--resume` fails for any reason, mill re-runs the stage from scratch with
-the full context appended; that costs an invocation and no strike.
+the full context appended; that costs an attempt and no strike.
 
 **Some blocks happen before any stage has run**, and those resume differently. An unprepared repo,
 a missing secrets file, more than one spec on the branch, or a branch already checked out
@@ -916,7 +916,7 @@ lower severities in the PR body.
 | Ceiling on any single command | 45 min of awake time |
 | Stall recoveries per launch | 2 |
 | Interruptions per stage | 3 |
-| Invocations per stage per run | 8 |
+| Attempts per stage per run | 8 |
 | Settle window after a wake | 90 s of awake time |
 | CI fix runs per PR per failing commit | 2 |
 | Runs per subject per 24h | 6 |
@@ -958,7 +958,7 @@ caps are deferred until mill supports per-token billing; the token history will 
 ## Deep review
 
 When you set the board's `Review` field to `Deep`, mill replaces a single reviewer stage with a
-fan-out. You opt in per item, because it runs roughly six Opus invocations per review stage.
+fan-out. You opt in per item, because it runs roughly six Opus calls per review stage.
 
 1. **One agent picks the facets.** It reads the artifact and chooses 2–4 review facets suited
    to *this* artifact, with a rationale. It chooses them rather than reading them from config,
@@ -1008,7 +1008,7 @@ confirm a finding, which means it needs write tools that `review:code` deliberat
 them in a second worktree at the same commit, thrown away afterwards, so nothing it writes can
 reach the run's branch and the no-reviewing-your-own-work rule still holds.
 
-**Deep review has a ceiling.** A fan-out is roughly six Opus invocations per review stage, and it
+**Deep review has a ceiling.** A fan-out is roughly six Opus calls per review stage, and it
 can run again after a fix, so one run can spend a lot quietly. mill caps the fan-out at eight
 sub-agents per review stage — the facet selector, at most four finders, the deduplicator, and
 refuters — and when there are more findings than refuter slots it refutes the highest severities
@@ -1122,7 +1122,7 @@ runs           id, repo_id, subject_kind, subject_number, route,
                -- unique index on (repo_id, subject_kind, subject_number)
                --   where status in ('running','blocked')
 
-stage_attempts id, run_id, stage, invocation, model, session_id, nonce,
+stage_attempts id, run_id, stage, attempt, model, session_id, nonce,
                status, strike_charged, verdict_json, tokens_in, tokens_out,
                cache_creation_tokens, cache_read_tokens, rate_limited_at,
                log_path, pid, pgid, pid_started_at, host_boot_at,
@@ -1199,7 +1199,7 @@ Three branches, evaluated in this order:
 - **A matching process group is alive, and mill spawned it this instance.** Normal operation —
   leave it alone. Only the periodic check reaches this branch.
 
-An interruption costs an invocation and no strike, and is capped per stage. This is the same
+An interruption costs an attempt and no strike, and is capped per stage. This is the same
 evidence and the same treatment whether mill restarted or a runner thread died underneath a live
 subprocess: the earlier design made those two cases differ, so an identical stale heartbeat with
 no live process failed the run terminally in one telling and re-entered it for free in the other,
@@ -1257,8 +1257,8 @@ Faraday handles the token exchange and userinfo fetch, matching `rep`.
 ```
 GET  /                 run list: subject, route, stage, status, tokens, disk, health
 GET  /runs/:id         stage timeline, per-stage token breakdown, artifacts, verdicts
-GET  /runs/:id/attempts/:stage/:invocation        one attempt: verdict, what it did, log tail
-GET  /runs/:id/attempts/:stage/:invocation/log    rendered tail, offset-paginated
+GET  /runs/:id/attempts/:stage/:number        one attempt: verdict, what it did, log tail
+GET  /runs/:id/attempts/:stage/:number/log    rendered tail, offset-paginated
 POST /runs/:id/kill    kill the process group, mark killed, set Status
 POST /pause            stop claiming new work; running stages continue
 POST /resume           claim again
@@ -1268,8 +1268,8 @@ POST /worktrees/:id/delete  remove a worktree manually
 ```
 
 **The log belongs to an attempt, not to a run.** Logs live at
-`~/.mill/logs/<run-id>/<stage>-<invocation>.jsonl`, and a run has as many as it had launches — the
-ledger deliberately permits several invocations of one stage, and the interesting comparison is
+`~/.mill/logs/<run-id>/<stage>-<number>.jsonl`, and a run has as many as it had launches — the
+ledger deliberately permits several attempts of one stage, and the interesting comparison is
 usually *between* them: what did the retry do differently? A route keyed on the run alone cannot
 say which one it means, so the timeline links to each attempt and the tail is scoped to one.
 
@@ -1439,7 +1439,7 @@ a genuinely silent stage cannot recover forever.
 for a session transcript to end up unreadable, so the path that starts fresh with the context
 appended is not an edge case here — it is the expected outcome some of the time. Charging a strike
 for it would mean the machine failing takes the blame after all, through the back door, which is
-what the whole rule exists to prevent. It costs an invocation, and the per-stage invocation cap is
+what the whole rule exists to prevent. It costs an attempt, and the per-stage attempt cap is
 what stops it looping.
 
 Watching for silence rather than watching for sleep means mill needs no special case for waking
@@ -1533,11 +1533,11 @@ tokens.
   artifact, when it treats a review as a rejection, how it picks a route, how it finds the spec,
   and the one sanctioned strike reset.
 - **The attempt ledger** — a table test with one case per row of the ledger's cost table,
-  asserting what each ending does to the invocation number and to the strike count. This is the
+  asserting what each ending does to the attempt number and to the strike count. This is the
   control plane every other subsystem routes its failures into, and its rules were the least
   pinned-down part of the design, so it gets the most direct test in the suite. Include the case
   the old rules could not express: a reviewer that crashes, then reviews cleanly, then reviews
-  again after a fix — three invocations, one strike, and three distinct verdict records.
+  again after a fix — three attempts, one strike, and three distinct verdict records.
 - **Supervisor** — worktree lifecycle against a scratch repo, preparing a repo on first touch,
   the concurrency cap, killing a process group whose child deliberately orphans itself, and
   removing stale locks.
@@ -1602,7 +1602,7 @@ the alexop.dev piece of the same name.
 **A loop, a harness, a factory.** Osmani's decomposition: a *loop* is one agent doing one job on
 repeat; a *harness* is the sandbox, tools, memory, and exit conditions around it; a *factory* is
 many harnessed loops fed by a queue and filtered through a review gate. mill is the harness and
-the factory; the loops are Claude Code invocations. The framing is why the stage graph's
+the factory; the loops are Claude Code attempts. The framing is why the stage graph's
 *structure* is data — you can see every step and its configuration in one place — while mill's
 Ruby runs the control flow over it, deciding when to
 retry, when to resume, and when to stop.
@@ -1789,7 +1789,7 @@ What held:
 - A denied call is reported to the agent, not hung. A stage read an allowed file, refused a
   denied sibling, explained why, and exited cleanly in 13 seconds.
 - Command-level Bash denies work: `Bash(curl:*)` blocked curl while `echo` ran.
-- `--resume` carries context across a separate process invocation and returns the **same**
+- `--resume` carries context across a separate process attempt and returns the **same**
   session id, which is what every relaunch depends on.
 
 What broke, and changed the design:

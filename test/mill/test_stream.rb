@@ -114,7 +114,7 @@ module Mill
 			verdict = JSON.parse(stream_for('plan_ok').raw_verdict, symbolize_names: true)
 
 			assert_equal 'plan', verdict[:stage]
-			assert_equal 1, verdict[:invocation]
+			assert_equal 1, verdict[:attempt]
 			assert_equal 'abc123', verdict[:nonce]
 		end
 
