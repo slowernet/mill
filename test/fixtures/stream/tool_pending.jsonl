@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"sess-slow","model":"claude-opus-5"}
+{"type":"assistant","session_id":"sess-slow","message":{"id":"msg_B","usage":{"input_tokens":1,"output_tokens":2},"content":[{"type":"tool_use","id":"toolu_slow","name":"Bash"}]}}

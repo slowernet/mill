@@ -21,6 +21,10 @@ module Mill
 	end
 end
 
+require_relative 'mill/clock'
 require_relative 'mill/db'
+require_relative 'mill/stream'
+require_relative 'mill/verdict'
+require_relative 'mill/spawn'
 require_relative 'mill/stages'
 require_relative 'mill/claude'

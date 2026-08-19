@@ -1,0 +1,2 @@
+{"type":"rate_limit_event","session_id":"sess-rl","rate_limit_info":{"status":"allowed","resetsAt":1787118600,"rateLimitType":"five_hour"}}
+{"type":"rate_limit_event","session_id":"sess-rl","rate_limit_info":{"status":"rejected","resetsAt":1787118600,"rateLimitType":"five_hour"}}

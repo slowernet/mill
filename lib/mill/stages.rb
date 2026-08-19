@@ -60,7 +60,7 @@ module Mill
 				tools: %w[Read Bash],
 				skill: nil
 			}
-		}.freeze
+		}.each_value { |config| config[:tools].freeze; config.freeze }.freeze
 
 		ROUTES = {
 			'plan' => %w[triage plan review:plan implement review:code pr],
