@@ -18,10 +18,11 @@ running it over trusting this document — it checks reality.
 - [3. Create the board](#3-create-the-board)
 - [4. Disable the board's built-in workflows](#4-disable-the-boards-built-in-workflows)
 - [5. Mint the stage token](#5-mint-the-stage-token)
-- [6. Branch protection](#6-branch-protection)
-- [7. Per-repo secrets](#7-per-repo-secrets)
-- [8. Server deployment (optional)](#8-server-deployment-optional)
-- [9. Verify](#9-verify)
+- [6. Permission rulesets](#6-permission-rulesets)
+- [7. Branch protection](#7-branch-protection)
+- [8. Per-repo secrets](#8-per-repo-secrets)
+- [9. Server deployment (optional)](#9-server-deployment-optional)
+- [10. Verify](#10-verify)
 
 ## 1. Two tokens, two jobs
 
@@ -85,6 +86,14 @@ gh project field-create <number> --owner @me --name Review \
   --data-type SINGLE_SELECT --single-select-options "Deep"
 ```
 
+Tell mill which board it is. Doctor fails rather than skipping its board check when these are
+unset:
+
+```
+export MILL_PROJECT=<number>
+export MILL_PROJECT_OWNER=<your github login>
+```
+
 Record the field ids and every option id:
 
 ```
@@ -136,7 +145,31 @@ printf '%s' '<token>' > ~/.mill/secrets/stage-token
 chmod 0600 ~/.mill/secrets/stage-token
 ```
 
-## 6. Branch protection
+## 6. Permission rulesets
+
+Each stage runs under its own ruleset in `~/.mill/settings/<stage>.json`. These live outside every
+worktree deliberately: a stage that could write `.claude/` would be picked up by the settings
+watcher and could disarm its own restrictions mid-session.
+
+Write them from mill's own definition rather than by hand, so what you create and what doctor
+demands cannot drift:
+
+```
+bundle exec rake mill:settings
+```
+
+Three things about these rules are easy to get wrong, and each produces a file that reads as
+protection while enforcing nothing. Doctor rejects all three:
+
+- **Worktree-relative paths only.** An absolute path is accepted silently and enforces nothing.
+  Nothing outside the worktree needs a rule anyway — the working directory already covers it.
+- **`Edit(...)`, never `Write(...)`.** Claude Code matches file permission checks against `Edit`
+  rules only, and `Edit` covers every file-editing tool including Write.
+- **No `allow` list.** In headless mode an allow list is advisory: a tool in neither `allow` nor
+  `deny` runs anyway. Confinement lives in `--tools`, and moving it into `allow` turns the
+  strongest half of layer 1 off.
+
+## 7. Branch protection
 
 mill's CI trigger fires on **required** checks going red, so the base branch needs branch
 protection with required status checks. This also makes CI a real merge gate for you, not just a
@@ -163,7 +196,7 @@ workflow and that its checks are required.
 `enforce_admins: false` leaves you able to merge past a red check deliberately. Set it to `true`
 if you would rather not have that option.
 
-## 7. Per-repo secrets
+## 8. Per-repo secrets
 
 A fresh worktree contains tracked files only, so `.env` and `config/master.key` are absent and an
 env-dependent test suite would fail on both attempts. For each repo whose tests need them:
@@ -179,7 +212,7 @@ that repo's `.mill.yml` so `mill:doctor` can check they are present.
 Use test-scoped values, not production ones. Nothing prevents an agent from printing an
 environment variable into a log it is allowed to write.
 
-## 8. Server deployment (optional)
+## 9. Server deployment (optional)
 
 Skip this on a laptop, where mill binds loopback and needs no identity check.
 
@@ -204,7 +237,7 @@ and a kill switch. Binding to a private network — Tailscale or a VPN — inste
 internet is a reasonable second layer, and Google will still accept the redirect URI provided the
 name resolves publicly and carries a valid certificate.
 
-## 9. Verify
+## 10. Verify
 
 ```
 bundle exec rake mill:doctor
@@ -214,16 +247,16 @@ It checks, and names anything missing:
 
 - `gh` authenticated, with `project` scope
 - the project resolves and has `Status`, `Evidence`, and `Review` with the expected options
-- every built-in workflow on the project is disabled — **if the Projects v2 API exposes
-  workflow enablement at all**, which is unverified (a Plan A gate in the design doc). If it
-  does not, doctor cannot check this directly; step 4 above is your confirmation, and mill
-  reports a Status it did not write as board interference rather than silently obeying it
+- every built-in workflow on the project is disabled. Doctor reads the board from
+  `MILL_PROJECT` and `MILL_PROJECT_OWNER` and fails when they are unset, rather than passing a
+  check it did not make. mill also reports a Status it did not write as board interference, which
+  catches a workflow re-enabled later
 - the stage token exists, is readable only by you, is unexpired, and has exactly the two expected
   permissions
 - `~/.mill` and `~/.mill/secrets` are `0700`
-- the permission ruleset files in `~/.mill/settings/` exist and deny the paths the design doc
-  requires, **with no absolute paths** — an absolute deny rule is accepted silently and enforces
-  nothing, so doctor treats one as a failure
+- the permission ruleset files in `~/.mill/settings/` exist and carry every deny rule the design
+  doc requires, **with no absolute paths and no `Write(...)` rules**, and put no confinement in
+  an `allow` list — each of those three is accepted silently and enforces nothing
 - every stage that names a skill has `Skill` in its toolset, and the three writing stages carry
   `--permission-mode acceptEdits`
 - on a server: the OAuth variables, the session secret, a non-empty `MILL_ADMIN_EMAILS`, and a

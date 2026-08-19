@@ -67,6 +67,11 @@ module Mill
 		end
 
 		# The stall detector suspends its silence window while a command runs.
+		#
+		# This fixture is hand-authored, not recorded. It pins the parser's
+		# behaviour, and it does *not* establish that the real CLI announces a
+		# command as it starts rather than only when it finishes — that is still an
+		# open measurement, and the design doc gates it on Plan 3.
 		def test_an_outstanding_command_is_visible
 			s = stream_for('tool_pending')
 

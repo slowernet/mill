@@ -41,11 +41,11 @@ Design doc, begun 2026-08-06. Git holds the history of how it changed.
 - [Deferred](#deferred)
 - [Build order](#build-order)
   - [Spike — the permission model](#spike--the-permission-model)
-  - [Plan A — Seams and doctor](#plan-a--seams-and-doctor)
-  - [Plan B — One run by hand — the keystone](#plan-b--one-run-by-hand--the-keystone)
-  - [Plan C — Autonomy](#plan-c--autonomy)
-  - [Plan D — Observe and interrupt](#plan-d--observe-and-interrupt)
-  - [Plan E — Other routes](#plan-e--other-routes)
+  - [Plan 1 — Seams and doctor](#plan-1--seams-and-doctor)
+  - [Plan 2 — One run by hand — the keystone](#plan-2--one-run-by-hand--the-keystone)
+  - [Plan 3 — Autonomy](#plan-3--autonomy)
+  - [Plan 4 — Observe and interrupt](#plan-4--observe-and-interrupt)
+  - [Plan 5 — Other routes](#plan-5--other-routes)
   - [Not yet planned](#not-yet-planned)
 - [Sources](#sources)
 
@@ -186,7 +186,7 @@ A **scheduler** and **concurrent-ruby** — mill has two threads and about three
 
 The one open call is **`retriable`** (actively maintained, tiny, randomised exponential backoff)
 against a dozen-line `with_backoff` helper. mill needs backoff in roughly three places. Either is
-defensible; pick one before Plan A rather than growing both.
+defensible; pick one before Plan 1 rather than growing both.
 
 **Paths.**
 
@@ -240,14 +240,11 @@ Projects v2 automation writes Status too. "Item closed → Done" would flip Stat
 a `Running` run, leaving the poller blind to a live subprocess; "Auto-add to project" would
 sweep every new issue onto the board.
 
-`mill:doctor` should assert they are off, but **it is not yet known whether the Projects v2 API
-exposes whether a built-in workflow is enabled**. Five minutes against the GraphQL schema settles
-it, and that is a gate on Plan A. If the field does not exist, doctor cannot check it directly and
-falls back to two things that are implementable: the setup runbook lists disabling the workflows as
-a step you confirm, and mill notices after the fact — a Status it did not write, changing under a
-run it owns, is reported as board interference rather than silently obeyed. A check the document
-promises but nothing implements is worse than one that admits its limits, because months later you
-re-enable "item closed → Done" and the sentinel that was supposed to catch it was never there.
+`mill:doctor` asserts they are off. **Settled 2026-08-19:** `ProjectV2Workflow` exposes
+`enabled: Boolean`, so this is a direct check rather than the confirmation-plus-sentinel fallback
+this section previously reserved. mill still reports a Status it did not write, changing under a
+run it owns, as board interference rather than silently obeying it — that catches a workflow
+re-enabled after setup, which a one-time check cannot.
 
 Field values belong to the project, not the issue, so an item's Status here is independent of
 its status on any other board, and no other project's automation can reach it.
@@ -607,14 +604,26 @@ cannot replay one from a previous launch.
 The trade this makes: the stage's prompt must demand the verdict as the last thing it emits, and a
 stage that adds a closing paragraph after its JSON fails validation. That is a loud, immediate
 failure in the first minute of the first run rather than a quiet one months in, which is the right
-way round.
+way round — and that is exactly how it went. The first real launch produced a well-formed verdict
+with three paragraphs of narration in front of it. What fixed it was giving the narration
+somewhere to go: the envelope now says that everything the stage wants to say belongs in
+`summary`, which is what mill puts in the log and the pull request body anyway. Telling a model
+not to explain itself does not work nearly as well as telling it where the explanation goes.
 
 `pr_number` is deliberately not in the verdict. mill recovers it with
 `gh pr list --head <branch>`, which is idempotent, so a crash between `gh pr create` and the
 state write reconciles instead of opening a second PR.
 
 `Mill::Claude` accumulates four token counts from per-message `usage` as it tees, persisting
-running totals so a killed attempt retains its partial count. mill tracks tokens across every part
+running totals so a killed attempt retains what can be known — which is three of the four.
+**The stream carries no running output-token total.** Measured across four real runs on
+2026-08-19, summed per-message `output_tokens` came to 13, 15, 37, and 16 where the closing
+`result` line reported 356, 361, 786, and 645; input and cache counts matched exactly every
+time, and the `thinking_tokens` events do not account for the gap. So an attempt killed before
+its result line records input, cache-read, and cache-creation normally and marks output
+**unmeasured** rather than storing a figure twenty to forty times too low. Anything reading
+these numbers — the UI, historical averages, an eventual cost model — must render unmeasured as
+unknown, never as zero, or every killed attempt looks free. mill tracks tokens across every part
 of the graph — per attempt, per stage, and per run — so it can present historical averages and,
 eventually, cost estimates for per-token billing.
 
@@ -779,7 +788,17 @@ ruleset passed, its `Bash(curl:*)` deny bound *and* the operator's `enabledPlugi
 so `superpowers:` skills resolved normally. That is what makes the skill-per-stage design work at
 all — mill does not have to enumerate plugins. Two consequences worth knowing: a stage inherits
 the operator's `SessionStart` hooks, including the Superpowers one that urges aggressive skill
-hunting, and a change to `~/.claude/settings.json` can change stage behaviour. `mill:doctor`
+hunting, and a change to `~/.claude/settings.json` can change stage behaviour.
+
+**The inherited hook is worse than a nuisance for the two stages that hold no `Skill` tool.**
+Measured 2026-08-19 on a real `triage` launch: the stage received the Superpowers `SessionStart`
+reminder telling it that invoking a skill before responding is non-negotiable, found it had only
+`Read`, `Glob`, and `Grep`, concluded the instruction matched a prompt-injection pattern, and
+opened its final message by saying so — which cost tokens and broke the verdict envelope. The
+stage was reasoning correctly; it was handed a contradiction. `triage` and `push` name no skill
+by design, so either the stage prompt has to tell them the reminder is mill's own and does not
+apply, or the hook has to be suppressed for them. Not yet decided; it belongs with the stage
+prompts in Plan 2. `mill:doctor`
 records the resolved skill source and version per attempt so a verdict can be traced back to the
 text that produced it.
 
@@ -875,7 +894,7 @@ detector meant to catch wedged stages would be reliably killing healthy ones ins
 The stream distinguishes them. A stage announces a command before it runs it and reports the
 result when it finishes, so mill knows whether a command is outstanding. While one is, the silence
 window is suspended and the per-command ceiling applies instead; with no command outstanding, five
-minutes of silence still means wedged. **This needs one behavioural check during Plan A**: confirm
+minutes of silence still means wedged. **This needs one behavioural check during Plan 1**: confirm
 the tee sees the command announced as it starts, not only when it completes. If it does not, the
 silence window has to be raised to the per-command ceiling for every stage holding `Bash`, and the
 detector gets much weaker for those stages.
@@ -1217,7 +1236,9 @@ about to shut the lid. Everything else actionable — releasing work, answering 
 directives, reviewing the PR — happens in GitHub. mill shows what GitHub cannot: what an agent
 is doing now, how many tokens it has used, and whether the factory is alive.
 
-The run detail page shows tokens in and out for every attempt, broken down by stage. When deep
+The run detail page shows tokens in and out for every attempt, broken down by stage. An attempt
+killed before it finished shows its output count as unmeasured rather than zero — see
+[The stage contract](#the-stage-contract) — so a reaped attempt never reads as a cheap one. When deep
 review runs, the breakdown includes each agent individually — every finder, the deduplicator,
 and every refuter — so you can see where the tokens go. The run list shows the total per run.
 Over time these numbers establish what each stage normally uses, so an unusual run stands out,
@@ -1327,7 +1348,7 @@ documented is not measured, and no spike has run. If they turn out to behave ide
 machine, mill cannot detect sleep at all: the settle window never opens, every deadline silently
 counts time asleep, and a night with the lid shut reaps every run in flight as timed out, with the
 defence apparently in place and doing nothing. The measurement is ten lines and needs someone to
-shut a laptop; it is a gate on Plan C in [Build order](#build-order).
+shut a laptop; it is a gate on Plan 3 in [Build order](#build-order).
 
 Which clock a deadline reads is a correctness question:
 
@@ -1653,10 +1674,10 @@ a target nobody cares about. A private `slowernet/mill-scratch`: real enough to 
 test suite, a CI workflow reporting a `test` check, files with actual structure — and disposable
 enough to reset after every rehearsal, since the same scenario gets run many times. On the board,
 with branch protection, so those mechanics are exercised too. It also needs a fixture scenario for
-Plan B: an issue, `gh issue develop`, and a committed spec on the linked branch, or the `plan`
+Plan 2: an issue, `gh issue develop`, and a committed spec on the linked branch, or the `plan`
 route arrives to find nothing to adopt.
 
-**Settled 2026-08-19, against CLI 2.1.227.** Two questions that gated Plan B are now measured, and
+**Settled 2026-08-19, against CLI 2.1.227.** Two questions that gated Plan 2 are now measured, and
 both had consequences — see [Containment](#containment) and the toolset table for what changed.
 `Skill` is gated by `--tools`, so every stage that names a skill now carries the tool. Headless
 mode refuses *every* file write under the default permission mode, so the three writing stages
@@ -1664,26 +1685,38 @@ carry `--permission-mode acceptEdits`, which still honours deny rules. `--settin
 the operator's settings rather than replacing them. Absolute-path deny rules silently do nothing.
 And the working directory, not the deny list, is what keeps a stage out of `~`.
 
-**Three measurements remain, and two need you at the machine.**
+**Two measurements remain, and both need you at the machine.**
 
 1. **Does the awake clock really stop during sleep?** Record
    `Process.clock_gettime(Process::CLOCK_MONOTONIC)` and
    `Process.clock_gettime(Process::CLOCK_UPTIME_RAW)`, shut the lid for ten minutes, wake, record
    both again. Equal deltas mean mill can never detect sleep and [Sleep and wake](#sleep-and-wake)
-   needs rebuilding on a different signal. **Gate on Plan C.**
-2. **Can the Projects v2 API report whether a built-in workflow is enabled?** Five minutes against
-   the GraphQL schema. If not, doctor's promised check needs the fallback described in
-   [The board is the queue](#the-board-is-the-queue). **Gate on Plan A.**
+   needs rebuilding on a different signal. **Gate on Plan 3.**
+2. ~~**Can the Projects v2 API report whether a built-in workflow is enabled?**~~ **Settled
+   2026-08-19 by schema introspection: yes.** `ProjectV2.workflows` is a connection and
+   `ProjectV2Workflow` carries `enabled: Boolean`, so doctor checks it directly and the fallback
+   sentinel described in [The board is the queue](#the-board-is-the-queue) is not needed for the
+   check. Doctor reads the project from `MILL_PROJECT` and `MILL_PROJECT_OWNER` and fails when
+   they are unset, rather than skipping the check silently.
 3. **Does `claude` authenticate headlessly on the Linux host against the subscription?** If it
    cannot, the server deployment does not work at all and mill is laptop-only after all. Ten
    minutes on the VPS. **Gate on deploying anywhere but the laptop.**
 
-One more is cheapest to answer while building: **does the tee see a command announced when it
-starts, or only when it finishes?** The stall detector's ability to tell a slow test suite from a
-wedged stage depends on it — answer during Plan A.
+One more is **still open**, and Plan 1 did not close it: **does the tee see a command announced
+when it starts, or only when it finishes?** The stall detector's ability to tell a slow test suite
+from a wedged stage depends on it. `Mill::Stream` implements the outstanding-command signal and
+`test/fixtures/stream/tool_pending.jsonl` exercises it, but that fixture is **hand-authored, not
+recorded** — it asserts the answer rather than establishing it. Replace it with a recording from a
+real `claude -p` that runs a slow command before trusting the silence window. **Gate on Plan 3**,
+where the stall detector is actually built.
 
-**Write one plan at a time**, and execute it before writing the next — doing Plan A teaches things
-that change Plan B, and a stale plan actively misleads. Each plan names the spec sections it
+**The plans are numbered, not lettered**, because they are parts in sequence rather than
+alternatives — "plan B" reads as the fallback you take when plan A fails, and each of these is a
+prerequisite for the next. Each is also a real plan document under `docs/superpowers/plans/`,
+written by the same `writing-plans` skill mill's own `plan` stage uses.
+
+**Write one plan at a time**, and execute it before writing the next — doing Plan 1 teaches things
+that change Plan 2, and a stale plan actively misleads. Each plan names the spec sections it
 implements rather than expecting an agent to read all of this. mill works on mill only after Plan
 D, when the kill switch and the log tail exist; before that, it is two unreliable things at once.
 
@@ -1718,21 +1751,37 @@ requests benign: a request phrased to look like CI tampering was refused on safe
 the permission layer was reached, which would have passed as a containment success for entirely
 the wrong reason.
 
-### Plan A — Seams and doctor
+### Plan 1 — Seams and doctor
 
 - Schema and migrations
 - `Mill::Github` over REST and GraphQL, fixture-backed
-- `Mill::Claude`: process-group spawn, tee stream-json, accumulate token counts, capture
-  session id, validate the verdict envelope
+- `Mill::Clock`, the platform module: the awake/continuous clock pair, boot time, and process
+  start time
+- `Mill::Spawn`: process-group spawn in the worktree, tee stream-json, cap and scrub the log,
+  reap a group only against a verified identity
+- `Mill::Stream`: session id, the four token counts, the outstanding-command signal the stall
+  detector needs, rate-limit events
+- `Mill::Verdict`: the envelope, the artifact rules, and the severity vocabulary
+- `Mill::Claude`: the seam that composes those four into one attempt — mint the nonce, carry it
+  into the prompt, launch, and return a validated verdict
+- `Mill::Rules` and `rake mill:settings`: the permission rulesets as data, written from one
+  definition so what setup creates and what doctor demands cannot drift
 - `rake mill:doctor`, and the setup runbook exercised for real
+- `test/boundary/`: the layer-1 assertions against the real CLI
 
-*Demonstrable:* doctor green against a real board; a rake task spawns `claude`, validates a
+*Demonstrable:* doctor green against a real board; `rake mill:probe` spawns `claude`, validates a
 nonce-stamped verdict, and reports its token usage.
 
-This boundary is deliberate: those two classes are the only ones touching the outside world, so
-from here on every plan tests with no network and no tokens.
+**What Plan 1 does not build.** There is no runner, no ledger, and no stage prompt. `Mill::Claude`
+owns the *envelope* — the JSON contract every verdict must satisfy — and nothing above it. The
+prose that tells a stage what job to do is Plan 2's, along with the two skills mill owns and the
+`--resume` policy. An attempt is the unit Plan 2 builds the ledger out of; Plan 1 stops at
+producing one honestly.
 
-### Plan B — One run by hand — **the keystone**
+This boundary is deliberate: `Mill::Github` and `Mill::Claude` are the only classes touching the
+outside world, so from here on every plan tests with no network and no tokens.
+
+### Plan 2 — One run by hand — **the keystone**
 
 - Runner over the `plan` route against scripted verdicts: the attempt ledger, and when it
   treats a review as a rejection
@@ -1747,7 +1796,7 @@ No board, no poller, no supervisor, no UI. This retires every integration risk a
 system is still small enough to debug by reading stdout. Everything before it is scaffolding;
 everything after is automation wrapped around a working core.
 
-### Plan C — Autonomy
+### Plan 3 — Autonomy
 
 - Supervisor: prepares a repo on first touch, manages the worktree lifecycle, removes stale
   locks, enforces the concurrency cap, kills a process group
@@ -1759,7 +1808,7 @@ everything after is automation wrapped around a working core.
 *Demonstrable:* set Status to `Ready`, walk away, come back to a PR. Close the lid mid-stage and
 the run recovers instead of burning a strike.
 
-### Plan D — Observe and interrupt
+### Plan 4 — Observe and interrupt
 
 - Roda UI: run list with health and spend, run detail, log endpoint, kill, pause and resume,
   repo diagnostics
@@ -1768,7 +1817,7 @@ the run recovers instead of burning a strike.
 *Demonstrable:* kill a run mid-stage and confirm nothing was orphaned; an underspecified issue
 blocks, your comment resumes it, the run finishes.
 
-### Plan E — Other routes
+### Plan 5 — Other routes
 
 - `fast` route with `diagnose`
 - `iterate` route and the PR triggers

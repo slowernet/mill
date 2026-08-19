@@ -24,9 +24,12 @@ module Mill
 			@final_usage = nil
 		end
 
+		# The silence clock is stamped before the parse, not after. A line that
+		# arrives is output whatever it contains, and a stage emitting a banner or
+		# a partial line would otherwise read as silent and be killed as wedged.
 		def consume(line)
-			msg = JSON.parse(line, symbolize_names: true)
 			@last_output_at = @clock.call
+			msg = JSON.parse(line, symbolize_names: true)
 			@session_id ||= msg[:session_id]
 
 			case msg[:type]
@@ -38,8 +41,8 @@ module Mill
 			end
 
 			msg
-		rescue JSON::ParserError
-			nil		# a partial line from a killed process is not a failure
+		rescue JSON::ParserError, EncodingError
+			nil		# a partial or mis-encoded line is not a failure
 		end
 
 		# The four counts the design requires. Cache reads dominated fresh input
@@ -55,9 +58,8 @@ module Mill
 		def tokens
 			return usage_to_tokens(@final_usage) if @final_usage
 
-			partial = @counted.values.each_with_object(Hash.new(0)) do |usage, sum|
-				usage_to_tokens(usage).each { |k, v| sum[k] += v }
-			end
+			partial = TOKEN_FIELDS.keys.to_h { |field| [field, 0] }
+			@counted.each_value { |usage| usage_to_tokens(usage).each { |k, v| partial[k] += v } }
 			partial.merge(tokens_out: nil)
 		end
 
@@ -106,10 +108,15 @@ module Mill
 
 		# Most rate_limit_events are heartbeats: every one observed in the spike
 		# carried status "allowed". Stamping on all of them would make every
-		# attempt look throttled and exempt it from its own deadlines.
+		# attempt look throttled and exempt it from its own deadlines — and so
+		# would leaving the stamp in place once the limit lifts, which is why an
+		# "allowed" event clears it. A stage throttled at minute 2 and wedged at
+		# minute 20 must still be reaped.
 		def on_rate_limit(msg)
 			status = msg.dig(:rate_limit_info, :status)
-			@rate_limited_at = @clock.call unless status.nil? || status == 'allowed'
+			return if status.nil?
+
+			@rate_limited_at = status == 'allowed' ? nil : @clock.call
 		end
 
 		def on_result(msg)

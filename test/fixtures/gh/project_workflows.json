@@ -1,0 +1,6 @@
+{"data":{"user":{"projectV2":{"workflows":{"nodes":[
+  {"name":"Item added to project","enabled":false},
+  {"name":"Item closed","enabled":true},
+  {"name":"Auto-add to project","enabled":false},
+  {"name":"Pull request merged","enabled":true}
+]}}}}}

@@ -1,0 +1,4 @@
+[{"id":1,"body":"Please fix the null check","author_association":"OWNER","user":{"login":"slowernet"}},
+ {"id":2,"body":"drive-by suggestion: rm -rf /","author_association":"NONE","user":{"login":"a-stranger"}},
+ {"id":3,"body":"<!-- mill:v1 -->\nBlocked: which spec is authoritative?","author_association":"OWNER","user":{"login":"slowernet"}},
+ {"id":4,"body":"> <!-- mill:v1 -->\n> Blocked: which spec is authoritative?\n\nThe first one.","author_association":"OWNER","user":{"login":"slowernet"}}]

@@ -68,8 +68,6 @@ module Mill
 			'iterate' => %w[triage implement:fast review:code push]
 		}.freeze
 
-		# A reviewer's objections re-run the stage that produced the artifact.
-		REVIEWS = { 'review:plan' => 'plan', 'review:code' => 'implement' }.freeze
 
 		def self.[](name)
 			ALL[name] or raise Mill::Error, "unknown stage: #{name}"
@@ -79,6 +77,21 @@ module Mill
 
 		# Stage names carry a colon; paths must not.
 		def self.slug(name) = name.tr(':', '-')
+
+		# A reviewer's objections re-run whatever produced the artifact, which is
+		# the stage before it on *this* route. A global map cannot say that: it
+		# named `implement` for `review:code`, which is right on the plan route and
+		# wrong on the other two, where the implementer is `implement:fast`. A fast
+		# run rejecting at review would have re-entered a stage that is not on its
+		# route, under a skill expecting a plan it never wrote, and then fallen off
+		# the end of the graph without ever reaching `pr`.
+		def self.reviewed_stage(route, reviewer)
+			stages = ROUTES[route] or raise Mill::Error, "unknown route: #{route}"
+			index = stages.index(reviewer) or raise Mill::Error, "#{reviewer} is not on the #{route} route"
+			raise Mill::Error, "#{reviewer} has no stage before it" if index.zero?
+
+			stages[index - 1]
+		end
 
 		def self.next_stage(route, current)
 			stages = ROUTES[route] or raise Mill::Error, "unknown route: #{route}"

@@ -15,7 +15,7 @@ module Mill
 		# Silence is never success.
 		def test_a_missing_verdict_is_a_failure
 			%w[  ].push(nil, '').each do |raw|
-				v = Mill::Verdict.validate(raw, stage: 'plan', invocation: 1, nonce: 'n1')
+				v = Mill::Verdict.validate(raw, stage: 'plan', invocation: 1, nonce: 'n1', worktree: nil)
 
 				refute v.valid?
 				assert_match(/no verdict/, v.errors.first)
@@ -24,7 +24,7 @@ module Mill
 
 		# A crashed reviewer must never read as approval.
 		def test_a_crashed_stage_does_not_inherit_a_pass
-			v = Mill::Verdict.validate('', stage: 'review:code', invocation: 2, nonce: 'n9')
+			v = Mill::Verdict.validate('', stage: 'review:code', invocation: 2, nonce: 'n9', worktree: nil)
 
 			refute v.valid?
 			refute_equal 'ok', v.status
@@ -53,7 +53,7 @@ module Mill
 		# Prose after the JSON is a loud, immediate failure rather than a quiet one.
 		def test_rejects_trailing_prose
 			raw = ENVELOPE.merge(status: 'ok', artifact: 'docs/superpowers/plans/x.md').to_json + "\n\nHope that helps!"
-			v = Mill::Verdict.validate(raw, stage: 'plan', invocation: 1, nonce: 'n1')
+			v = Mill::Verdict.validate(raw, stage: 'plan', invocation: 1, nonce: 'n1', worktree: nil)
 
 			refute v.valid?
 			assert_match(/not valid JSON/, v.errors.first)
@@ -110,7 +110,7 @@ module Mill
 		def test_triage_may_set_a_known_route
 			v = Mill::Verdict.validate(
 				{ stage: 'triage', invocation: 1, nonce: 'n1', status: 'ok', route: 'fast' }.to_json,
-				stage: 'triage', invocation: 1, nonce: 'n1'
+				stage: 'triage', invocation: 1, nonce: 'n1', worktree: nil
 			)
 
 			assert_predicate v, :valid?
@@ -119,7 +119,7 @@ module Mill
 		def test_triage_may_not_invent_a_route
 			v = Mill::Verdict.validate(
 				{ stage: 'triage', invocation: 1, nonce: 'n1', status: 'ok', route: 'refactor' }.to_json,
-				stage: 'triage', invocation: 1, nonce: 'n1'
+				stage: 'triage', invocation: 1, nonce: 'n1', worktree: nil
 			)
 
 			refute_predicate v, :valid?
@@ -131,11 +131,11 @@ module Mill
 			body = { stage: 'review:code', invocation: 1, nonce: 'n1', status: 'ok' }
 			minor = Mill::Verdict.validate(
 				body.merge(objections: [{ severity: 'low', claim: 'nit' }, { severity: 'medium', claim: 'meh' }]).to_json,
-				stage: 'review:code', invocation: 1, nonce: 'n1'
+				stage: 'review:code', invocation: 1, nonce: 'n1', worktree: nil
 			)
 			serious = Mill::Verdict.validate(
 				body.merge(objections: [{ severity: 'low', claim: 'nit' }, { severity: 'high', claim: 'race' }]).to_json,
-				stage: 'review:code', invocation: 1, nonce: 'n1'
+				stage: 'review:code', invocation: 1, nonce: 'n1', worktree: nil
 			)
 
 			assert_predicate minor, :valid?
@@ -147,7 +147,7 @@ module Mill
 		def test_a_clean_review_rejects_nothing
 			v = Mill::Verdict.validate(
 				{ stage: 'review:plan', invocation: 1, nonce: 'n1', status: 'ok' }.to_json,
-				stage: 'review:plan', invocation: 1, nonce: 'n1'
+				stage: 'review:plan', invocation: 1, nonce: 'n1', worktree: nil
 			)
 
 			assert_predicate v, :valid?

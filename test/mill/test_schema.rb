@@ -98,6 +98,28 @@ module Mill
 			assert_equal 0, row[:stall_recoveries]
 		end
 
+		# The stream carries no running output total, so a killed attempt has no
+		# honest figure. NULL means unmeasured; 0 would make it look free.
+		def test_output_tokens_may_be_unmeasured
+			repo = create_repo
+			run = create_run(repo_id: repo)
+			id = db[:stage_attempts].insert(run_id: run, stage: 'plan', invocation: 1, nonce: 'n',
+				started_at: Mill.now, tokens_in: 5, tokens_out: nil)
+
+			assert_nil db[:stage_attempts][id: id][:tokens_out]
+			assert_equal 5, db[:stage_attempts][id: id][:tokens_in]
+		end
+
+		def test_the_other_three_counts_stay_required
+			repo = create_repo
+			run = create_run(repo_id: repo)
+
+			assert_raises(Sequel::NotNullConstraintViolation) do
+				db[:stage_attempts].insert(run_id: run, stage: 'plan', invocation: 9, nonce: 'n',
+					started_at: Mill.now, cache_read_tokens: nil)
+			end
+		end
+
 		def test_events_dedupe_on_node_id
 			repo = create_repo
 			db[:events].insert(repo_id: repo, kind: 'comment', gh_node_id: 'IC_1', created_at: Mill.now)

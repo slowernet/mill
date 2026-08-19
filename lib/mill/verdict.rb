@@ -7,14 +7,20 @@ module Mill
 	class Verdict
 		STATUSES = %w[ok blocked failed].freeze
 		ROUTES = %w[plan fast iterate].freeze
+		SEVERITIES = %w[critical high medium low].freeze
+		SERIOUS = %w[critical high].freeze
 
 		attr_reader :data, :errors
 
-		def self.validate(raw, stage:, invocation:, nonce:, worktree: nil)
+		# `worktree` is required rather than defaulted. It may be nil for a stage
+		# with no tree, but a caller that simply forgets it would silently skip the
+		# existence, emptiness, and symlink checks — and a plan stage that wrote
+		# nothing would validate clean.
+		def self.validate(raw, stage:, invocation:, nonce:, worktree:)
 			new(raw, stage: stage, invocation: invocation, nonce: nonce, worktree: worktree).tap(&:validate)
 		end
 
-		def initialize(raw, stage:, invocation:, nonce:, worktree: nil)
+		def initialize(raw, stage:, invocation:, nonce:, worktree:)
 			@raw = raw
 			@stage = stage
 			@invocation = invocation
@@ -38,9 +44,16 @@ module Mill
 
 		# A reviewer returns ok with objections; it does not fail. Only high or
 		# critical re-runs the stage it reviewed.
+		#
+		# Matched case-insensitively because the reviewer skill's own output format
+		# specifies `Severity: CRITICAL | HIGH | MEDIUM | LOW`. Matching only
+		# lowercase read every objection it raised as advisory, so the reviewed
+		# stage never re-ran and the whole review gate was inert.
 		def serious_objections
-			objections.select { |o| %w[high critical].include?(o[:severity].to_s) }
+			objections.select { |o| SERIOUS.include?(severity_of(o)) }
 		end
+
+		def severity_of(objection) = objection[:severity].to_s.strip.downcase
 
 		def rejects? = serious_objections.any?
 
@@ -88,8 +101,15 @@ module Mill
 			raw = @data[:objections]
 			return if raw.nil?
 			return fail!('objections must be a list') unless raw.is_a?(Array)
+			return fail!('every objection must be an object') unless raw.all? { |o| o.is_a?(Hash) }
 
-			fail!('every objection must be an object') unless raw.all? { |o| o.is_a?(Hash) }
+			# An unrecognised severity has to fail loudly. Filing it quietly as
+			# non-serious is how a critical finding becomes a footnote.
+			unknown = raw.reject { |o| SEVERITIES.include?(severity_of(o)) }
+			return if unknown.empty?
+
+			fail!("objection severity must be one of #{SEVERITIES.join(', ')}: " \
+				"#{unknown.map { |o| o[:severity].inspect }.uniq.join(', ')}")
 		end
 
 		def check_artifact
@@ -105,14 +125,21 @@ module Mill
 			check_artifact_on_disk(path) if @worktree
 		end
 
+		# File.exist? is true for a directory and File.size reports its inode size,
+		# so `mkdir -p docs/superpowers/plans/x.md` passed both checks and handed
+		# implement a directory as the plan to execute.
 		def check_artifact_on_disk(path)
 			full = File.join(@worktree, path)
-			return fail!('artifact does not exist') unless File.exist?(full)
+			return fail!('artifact is not a file') unless File.file?(full)
 			fail!('artifact is empty') if File.size(full).zero?
 			# Compare against the worktree plus a separator: a bare prefix test lets
 			# /tmp/work-evil/x pass for a worktree of /tmp/work.
 			root = File.join(File.realpath(@worktree), '')
 			fail!('artifact traverses a symlink') unless File.realpath(full).start_with?(root)
+		rescue SystemCallError => e
+			# The path is agent-controlled. A symlink loop or a vanished worktree
+			# costs the stage a strike; it does not take mill down.
+			fail!("artifact could not be resolved: #{e.message}")
 		end
 
 		# Only triage picks the route. The Evidence directive is the board's alone.
