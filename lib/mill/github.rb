@@ -38,6 +38,17 @@ module Mill
 				'number,title,body,state,author,comments,url')
 		end
 
+		def project_id(project, owner:)
+			json('project', 'view', project.to_s, '--owner', owner, '--format', 'json')[:id]
+		end
+
+		# Field and option ids are opaque and belong to the project, so mill has to
+		# resolve them rather than guess at them from the names it knows.
+		def project_fields(project, owner:)
+			json('project', 'field-list', project.to_s, '--owner', owner, '--format', 'json')
+				.fetch(:fields, [])
+		end
+
 		# Projects v2 is GraphQL-only, so the board is never read with `gh issue list`.
 		def board_items(project, owner:)
 			json('project', 'item-list', project.to_s, '--owner', owner, '--format', 'json')
@@ -122,6 +133,13 @@ module Mill
 		end
 
 		def stamp(body) = "#{MARKER}\n#{body}"
+
+		# mill is the sole writer of Status. This is the only method that writes
+		# one, which is what makes that rule enforceable rather than aspirational.
+		def set_status(project_id:, item_id:, field_id:, option_id:)
+			run('project', 'item-edit', '--id', item_id, '--project-id', project_id,
+				'--field-id', field_id, '--single-select-option-id', option_id)
+		end
 
 		# mill opens the pull request, not the stage. The stage composes the body and
 		# pushes the branch — both of which work inside the sandbox — and mill makes
