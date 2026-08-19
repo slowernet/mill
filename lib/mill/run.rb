@@ -88,7 +88,18 @@ module Mill
 					launcher: launcher || default_launcher(&announce),
 					context: { issue: issue_body, spec_path: @spec_path, branch: @branch, base: base,
 						answers: @answers })
-				@resumed ? r.restore : r
+				# A blocked run being answered restores, which may spend its sanctioned
+				# strike reset. A run that already has attempts behind it — one the
+				# supervisor interrupted and restarted — only reloads: it picks up at
+				# the stage it was in, with nothing forgiven, because nobody answered
+				# anything. A run with no attempts starts at the top of its route.
+				if @resumed
+					r.restore
+				elsif @ledger_has_attempts
+					r.reload
+				else
+					r
+				end
 			end
 		end
 
@@ -124,6 +135,9 @@ module Mill
 			# A fresh run has nothing to restore; a blocked one has verdicts the
 			# resumed stage needs handed back to it.
 			@resumed = row[:status] == 'blocked'
+			# Anything already attempted means this run is being picked up rather
+			# than started, whatever its status says.
+			@ledger_has_attempts = db[:stage_attempts].where(run_id: row[:id]).any?
 		end
 
 		def fail_with(problem, questions)

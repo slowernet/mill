@@ -445,6 +445,36 @@ module Mill
 			assert_raises(Mill::Error) { sup.reap }
 		end
 
+		# The reaper re-enters the stage the run was in. A restarted run that began
+		# at the top of its route would re-run every stage it had already banked:
+		# `plan` writes its artifact a second time, and the ledger counts fresh
+		# attempts against stages that already passed.
+		def test_a_restarted_run_picks_up_at_the_stage_it_was_in
+			sup = supervisor
+			run_id = claim(sup)
+			db[:runs].where(id: run_id).update(current_stage: 'implement')
+			%w[triage plan review:plan].each_with_index do |stage, i|
+				db[:stage_attempts].insert(run_id: run_id, stage: stage, number: 1, nonce: "n#{i}",
+					status: 'ok', started_at: Mill.now, verdict_json: '{"status":"ok"}')
+			end
+
+			run = Mill::Run.adopt(run_id, db: db)
+			runner = run.runner(launcher: ->(**) {})
+
+			assert_equal 'implement', runner.stage
+		end
+
+		# A run with nothing behind it starts at the top, which is the only case
+		# where that is the right answer.
+		def test_a_fresh_run_starts_at_the_top_of_its_route
+			sup = supervisor
+			run_id = claim(sup)
+
+			runner = Mill::Run.adopt(run_id, db: db).runner(launcher: ->(**) {})
+
+			assert_equal 'triage', runner.stage
+		end
+
 		def test_a_finished_run_is_not_reaped
 			sup = supervisor
 			started = watching_restarts(sup)

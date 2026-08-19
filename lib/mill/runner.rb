@@ -46,6 +46,22 @@ module Mill
 		def restore
 			raise Mill::Error, "run #{@run_id} is not blocked" unless run_row[:status] == 'blocked'
 
+			reload
+			rescue_from_strikes
+			self
+		end
+
+		# Picks a run back up where it was. Two callers, and they differ only in what
+		# they are entitled to do afterwards: answering a blocked run may also spend
+		# its one sanctioned strike reset, while a run the supervisor interrupted may
+		# not — nobody answered anything.
+		#
+		# Without this, a restarted run began at the first stage of its route and
+		# re-ran every stage it had already banked: `plan` would write its artifact
+		# a second time and the ledger would count fresh attempts against stages
+		# that had already passed. @stage is otherwise `route_stages.first`, because
+		# that is the right answer only for a run that has never launched anything.
+		def reload
 			@db[:stage_attempts].where(run_id: @run_id).order(:id).each do |row|
 				verdict = row[:verdict_json] ? JSON.parse(row[:verdict_json], symbolize_names: true) : {}
 				@sessions[row[:stage]] = row[:session_id]
@@ -53,7 +69,6 @@ module Mill
 				@verdicts << { stage: row[:stage], status: verdict[:status], summary: verdict[:summary] }
 			end
 			@stage = run_row[:current_stage] || route_stages.first
-			rescue_from_strikes
 			self
 		end
 
