@@ -11,10 +11,11 @@ module Mill
 
 		attr_reader :run_id, :state
 
-		def initialize(db:, run_id:, launcher:, context: {})
+		def initialize(db:, run_id:, launcher:, github: nil, context: {})
 			@db = db
 			@run_id = run_id
 			@launcher = launcher
+			@github = github
 			@context = context
 			@ledger = Mill::Ledger.new(db, run_id)
 			@sessions = {}
@@ -122,8 +123,29 @@ module Mill
 		def advance(attempt, number)
 			@ledger.charge(stage: @stage, outcome: reviewer?(@stage) ? :reviewed_clean : :ok,
 				number: number, attempt: attempt)
+			return halt(:blocked, @pr_error) if @stage == 'pr' && !open_pull_request(attempt)
+
 			@stage = Mill::Stages.next_stage(route, @stage)
 			@stage.nil? ? finish : :advanced
+		end
+
+		# The stage pushed the branch and wrote the body; mill makes the call. A
+		# failure here blocks rather than passing: a run that reports done with no
+		# pull request has produced nothing, and the pull request is the only thing
+		# a human ever reads.
+		def open_pull_request(attempt)
+			row = run_row
+			repo = @db[:repos].where(id: row[:repo_id]).first
+			name = "#{repo[:owner]}/#{repo[:name]}"
+			github = @github || Mill::Github.new
+
+			pr = github.create_pull_request(name, head: row[:branch], base: repo[:base_branch] || 'main',
+				title: attempt.verdict.data[:title], body: attempt.verdict.data[:body])
+			@db[:runs].where(id: @run_id).update(pr_number: pr[:number])
+			true
+		rescue StandardError => e
+			@pr_error = "the pull request could not be opened: #{e.message}"
+			false
 		end
 
 		# A reviewer that finds something serious is the reviewer succeeding: it

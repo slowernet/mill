@@ -4,9 +4,24 @@ module Mill
 	# Walks the graph against scripted verdicts. Never runs claude, never touches
 	# the network. Every branch of the ledger is reachable from here.
 	class TestRunner < Mill::TestCase
+		# mill opens the pull request, so a runner walking a route that ends in one
+		# needs a seam. Records what it was asked for.
+		class FakeGithub
+			attr_reader :created
+
+			def initialize(fail_with: nil) = (@created = []; @fail_with = fail_with)
+
+			def create_pull_request(repo, head:, base:, title:, body:)
+				raise Mill::Github::Error, @fail_with if @fail_with
+
+				@created << { repo: repo, head: head, base: base, title: title, body: body }
+				{ number: 50 + @created.length, state: 'OPEN' }
+			end
+		end
+
 		# The smallest thing shaped like a Mill::Claude::Attempt.
 		def scripted(status: 'ok', valid: true, success: true, objections: [], questions: [],
-			artifact: nil, session: 'sess-1', summary: 'did the thing')
+			artifact: nil, session: 'sess-1', summary: 'did the thing', title: 'A title', body: 'A body')
 			verdict = Object.new
 			verdict.define_singleton_method(:valid?) { valid }
 			verdict.define_singleton_method(:status) { status }
@@ -15,7 +30,9 @@ module Mill
 			verdict.define_singleton_method(:serious_objections) { objections }
 			verdict.define_singleton_method(:questions) { questions }
 			verdict.define_singleton_method(:errors) { valid ? [] : ['no verdict'] }
-			verdict.define_singleton_method(:data) { { artifact: artifact, summary: summary } }
+			verdict.define_singleton_method(:data) do
+				{ artifact: artifact, summary: summary, title: title, body: body }
+			end
 
 			stream = Object.new
 			stream.define_singleton_method(:session_id) { session }
@@ -33,16 +50,18 @@ module Mill
 		end
 
 		# Scripts one reply per stage visit, in order.
-		def runner_for(script, route: 'plan')
+		def runner_for(script, route: 'plan', github: FakeGithub.new)
 			@calls = []
-			run_id = create_run(repo_id: create_repo, route: route)
+			@github = github
+			run_id = create_run(repo_id: create_repo(local_path: '/tmp/clone', base_branch: 'main'),
+				route: route, branch: 'a-branch')
 			queue = script.dup
 			launcher = lambda do |stage:, prompt:, number:, session_id:|
 				@calls << { stage: stage, number: number, session_id: session_id, prompt: prompt }
 				reply = queue.shift or raise "script exhausted at #{stage}"
 				reply.is_a?(Proc) ? reply.call(stage) : reply
 			end
-			Mill::Runner.new(db: db, run_id: run_id, launcher: launcher,
+			Mill::Runner.new(db: db, run_id: run_id, launcher: launcher, github: @github,
 				context: { issue: 'Track low-stock items' })
 		end
 
@@ -277,6 +296,42 @@ module Mill
 			assert_nil row[:tokens_out]
 			assert_equal 5, row[:tokens_in]
 			assert_equal 900, row[:cache_read_tokens]
+		end
+
+		# --- the pull request -------------------------------------------------
+
+		# The stage pushes and composes; mill makes the call, because gh cannot
+		# verify TLS inside the sandbox and because this leaves one GitHub seam.
+		def test_mill_opens_the_pull_request_with_what_the_stage_composed
+			runner = runner_for(clean_run)
+			runner.call
+
+			assert_equal 1, @github.created.length
+			opened = @github.created.first
+
+			assert_equal 'slowernet/mill-scratch', opened[:repo]
+			assert_equal 'a-branch', opened[:head]
+			assert_equal 'main', opened[:base]
+			assert_equal 'A title', opened[:title]
+			assert_equal 'A body', opened[:body]
+		end
+
+		def test_the_pull_request_number_is_recorded_on_the_run
+			runner = runner_for(clean_run)
+			runner.call
+
+			assert_equal 51, db[:runs].where(id: runner.run_id).get(:pr_number)
+		end
+
+		# A run that says done with no pull request has produced nothing, and the
+		# pull request is the only thing a human ever reads.
+		def test_a_run_whose_pull_request_fails_blocks_rather_than_finishing
+			runner = runner_for(clean_run, github: FakeGithub.new(fail_with: 'rate limited'))
+			outcome = runner.call
+
+			assert_equal :blocked, outcome
+			assert_match(/could not be opened/, runner.state[:reason])
+			assert_nil db[:runs].where(id: runner.run_id).get(:pr_number)
 		end
 
 		# --- caps -----------------------------------------------------------

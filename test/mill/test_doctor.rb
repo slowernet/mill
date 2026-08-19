@@ -196,7 +196,8 @@ module Mill
 				allowed = Mill::Rules.for_stage(stage).dig(:sandbox, :network, :allowedDomains)
 
 				if %w[pr push].include?(stage)
-					assert_equal %w[github.com api.github.com], allowed, "#{stage} must reach GitHub"
+					assert_equal %w[github.com], allowed,
+						"#{stage} pushes a branch; mill makes every API call from outside the sandbox"
 				else
 					assert_empty allowed, "#{stage} has no business on the network"
 				end

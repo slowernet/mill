@@ -391,7 +391,7 @@ knows what to do.
 | `implement` | Opus | `Read,Glob,Grep,Write,Edit,Bash,Skill` | `acceptEdits` | `mill:implement` | code + tests |
 | `implement:fast` | Opus | `Read,Glob,Grep,Write,Edit,Bash,Skill` | `acceptEdits` | `superpowers:test-driven-development` | code + tests |
 | `review:code` | Opus | `Read,Glob,Grep,Bash,Skill` | default | `adversarial-reviewer` | objections |
-| `pr` | Opus | `Read,Glob,Grep,Bash,Skill` | default | `mill:pr` | pull request |
+| `pr` | Opus | `Read,Glob,Grep,Bash,Skill` | default | `mill:pr` | pushed branch, PR title and body |
 | `push` | Opus | `Read,Bash` | default | none | pushed commits on an existing PR |
 
 Sonnet for cheap mechanical passes, Opus for judgment and code. No user-facing toggle; you
@@ -642,9 +642,28 @@ What the schema cannot know stays in `Mill::Verdict`: whether the nonce matches 
 the artifact resolves inside the worktree without traversing a symlink, and whether questions are
 present iff the status is `blocked`. A schema constrains shape; only mill knows which launch this is.
 
-`pr_number` is deliberately not in the verdict. mill recovers it with
-`gh pr list --head <branch>`, which is idempotent, so a crash between `gh pr create` and the
-state write reconciles instead of opening a second PR.
+**mill opens the pull request; the stage composes it.** The `pr` stage runs the tests, pushes the
+branch, and returns `title` and `body` in its verdict. mill makes the API call through
+`Mill::Github`.
+
+The immediate cause was mechanical: `gh` cannot verify TLS inside the Bash sandbox. It asks macOS to
+evaluate the certificate chain through the Security framework, which the sandbox blocks — measured
+across three attempts on 2026-08-19, while `curl` and `git push` reached the same host over the same
+allowlist. `SSL_CERT_FILE` does not help, because Go on macOS ignores it, and
+`GODEBUG=x509usefallbackroots=1` was probed directly and did not either.
+
+But the shape is better regardless, which is why this is the fix rather than turning the sandbox off
+for two stages. It closes the second-seam limitation this document used to list. It makes
+`gh pr merge` unreachable by construction rather than by a deny rule someone has to remember. And it
+lets the two stages that touch the network drop to `github.com` alone, since pushing a branch is all
+they now do.
+
+`pr_number` is still deliberately not in the verdict. mill recovers it with
+`gh pr list --head <branch>`, which is idempotent, so a crash between opening the pull request and
+the state write reconciles instead of opening a second one.
+
+A stage reporting `ok` with an empty `title` or `body` fails validation. mill would otherwise put an
+empty pull request in front of the only human gate in the design.
 
 A stage that answers without the tool at all — an older CLI, a failure mode not yet seen — still
 lands on the string path and is validated the same way. It is a verdict if it parses and a failed
@@ -1664,9 +1683,10 @@ given that verification is the bottleneck. mill defers it; see [Deferred](#defer
   persona catch sloppiness, not shared blind spots. Deep review answers this partly for code, by
   making a refuter write a failing test; for plan review the limitation stands. Design escapes it
   because you review the design yourself. The seam, if it matters, is the stage's model field.
-- **Agents are a second GitHub seam.** `pr` and `push` run `gh` inside the worktree, so
-  `Mill::Github` is the single seam for mill's own calls only. A GitHub App migration would have
-  to reckon with agent-side calls too — not a one-file change.
+- ~~**Agents are a second GitHub seam.**~~ **Closed 2026-08-19.** `Mill::Github` is now the only
+  path to the GitHub API on mill's side: the `pr` stage pushes its branch and returns a title and a
+  body, and mill opens the pull request. Stages still run `git`, so a GitHub App migration reckons
+  with `git push` credentials, but no longer with agent-side API calls.
 - **Attribution.** mill's commits, comments, and PRs appear as you. The `mill/` prefix and the
   comment marker are the only signals.
 - **The permission ruleset is the boundary, and `implement` needs a wide one.** Layers 2–4

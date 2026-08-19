@@ -37,24 +37,28 @@ gate on everything mill produced, so write for them:
 Do not oversell it. A pull request body that reads as advocacy makes the reviewer's job harder,
 because they then have to work out what you left out.
 
-## 3. Push and open
+## 3. Push, and hand mill the pull request
 
-Push the branch to origin, then `gh pr create` against the base branch mill named. Nothing else.
+Push the branch to origin. That is the only network call you make.
 
-## What is denied to you, and why
+Then report `title` and `body` in your verdict. **mill opens the pull request with exactly what you
+return**, so the body is not a draft and not a summary of a body — it is the pull request.
 
-`gh pr merge` — mill never merges. Reading the pull request is the human gate, and a factory that
-merges its own output is a dark factory.
+## Why you do not call the API yourself
 
-`gh issue comment`, `gh pr comment`, `gh api` — only mill comments, and it always stamps a marker so
-its own poller does not read mill's writing as a new instruction. If you posted one, the pipeline
-could trigger itself in a loop.
+Two reasons, and neither is that you are not trusted with it.
 
-If you find yourself reaching for any of these, that is the design telling you the job is mill's
-rather than yours.
+`gh` cannot verify TLS inside your sandbox: it asks macOS to evaluate the certificate chain, and
+that path is blocked, while `curl` and `git push` reach the same host perfectly well. Measured
+across three attempts before this was changed.
 
-## Do not report the pull request number
+And it is the better shape anyway. Every GitHub call mill's side makes now goes through one place,
+which is what makes the comment marker and the no-merge rule enforceable rather than remembered.
+`gh pr merge` is not something you could reach even by accident. **mill never merges** — reading the
+pull request is the human gate, and a factory that merges its own output is a dark factory.
 
-mill recovers it with `gh pr list --head <branch>`, which is idempotent. If you crash between
-creating the pull request and mill recording it, mill reconciles instead of opening a second one.
-Reporting it would make that reconciliation a guess.
+## Do not report a pull request number
+
+mill recovers it with `gh pr list --head <branch>`, which is idempotent. A crash between opening the
+pull request and recording it reconciles rather than opening a second one. Reporting it would make
+that reconciliation a guess.

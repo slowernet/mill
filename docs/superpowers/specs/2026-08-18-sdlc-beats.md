@@ -438,8 +438,8 @@ This is mill's own skill, synthesized from:
 | 1 | Run the full test suite. If tests fail, report failures and block — nothing else happens until green | (SP:finishing-a-development-branch "Step 1: Verify Tests") |
 | 2 | Verify fresh evidence: exit code, failure count, full output. "Tests pass" without having run them is a verdict violation | (SP:verification-before-completion "The Gate Function") |
 | 3 | Compose the PR body: the spec summary, the plan summary (if plan route), the per-stage token breakdown, any reviewer objections and how they were addressed, the evidence sample table (if evidence-required) | (mill) |
-| 4 | Push the branch to origin | (mill) |
-| 5 | Open the PR with `gh pr create` against the base branch | (mill) |
+| 4 | Push the branch to origin — the stage's only network call | (mill) |
+| 5 | Return `title` and `body` in the verdict; **mill** opens the pull request through `Mill::Github`, because `gh` cannot verify TLS inside the sandbox and because one seam is the better shape | (mill) |
 | 6 | Emit the verdict. `pr_number` is deliberately not in it — mill recovers it with `gh pr list --head <branch>`, which is idempotent, so a crash between `gh pr create` and the state write reconciles instead of opening a second PR | (mill) |
 
 **After the stage finishes, mill itself posts each reviewer objection's notes as PR comments

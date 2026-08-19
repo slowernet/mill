@@ -95,12 +95,17 @@ module Mill
 			assert_includes body, 'bundle exec rake test'
 		end
 
-		# mill never merges, and stages cannot comment.
-		def test_the_pr_prompt_forbids_merging_and_commenting
+		# mill never merges, and the pr stage no longer calls the API at all — it
+		# pushes and hands mill a title and a body.
+		def test_the_pr_prompt_says_mill_never_merges
+			assert_match(/never merges/i, prompt('pr', issue: 'x', branch: 'b'))
+		end
+
+		def test_the_pr_prompt_asks_for_a_title_and_body_not_an_api_call
 			body = prompt('pr', issue: 'x', branch: 'b')
 
-			assert_match(/do not merge/i, body)
-			assert_match(/do not comment|never comment/i, body)
+			assert_match(/`title` and `body`/, body)
+			refute_match(/gh pr create/, body)
 		end
 
 		def test_an_unknown_stage_raises_rather_than_rendering_nothing

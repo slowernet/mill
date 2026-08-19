@@ -7,7 +7,8 @@ module Mill
 	class TestResume < Mill::TestCase
 		def setup
 			super
-			@run = create_run(repo_id: create_repo, route: 'plan', status: 'blocked', current_stage: 'pr')
+			@run = create_run(repo_id: create_repo(local_path: '/tmp/c', base_branch: 'main'),
+				route: 'plan', status: 'blocked', current_stage: 'pr', branch: 'b')
 			@calls = []
 		end
 
@@ -27,6 +28,10 @@ module Mill
 			db[:runs].where(id: @run).update(current_stage: stage)
 		end
 
+		FakeGithub = Class.new do
+			def create_pull_request(*, **) = { number: 7, state: 'OPEN' }
+		end
+
 		def scripted(stage, status: 'ok', questions: [])
 			verdict = Object.new
 			artifact = Mill::Stages[stage][:artifact] ? 'docs/superpowers/plans/p.md' : nil
@@ -34,7 +39,9 @@ module Mill
 			verdict.define_singleton_method(:status) { status }
 			verdict.define_singleton_method(:rejects?) { false }
 			verdict.define_singleton_method(:questions) { questions }
-			verdict.define_singleton_method(:data) { { artifact: artifact, summary: 'done' } }
+			verdict.define_singleton_method(:data) do
+				{ artifact: artifact, summary: 'done', title: 'T', body: 'B' }
+			end
 			stream = Object.new
 			stream.define_singleton_method(:session_id) { "sess-#{Mill::Stages.slug(stage)}" }
 			stream.define_singleton_method(:tokens) { { tokens_in: 1, tokens_out: 2 } }
@@ -51,7 +58,7 @@ module Mill
 				@calls << { stage: stage, number: number, session_id: session_id, prompt: prompt }
 				(script || ->(s) { scripted(s) }).call(stage)
 			end
-			Mill::Runner.new(db: db, run_id: @run, launcher: launcher,
+			Mill::Runner.new(db: db, run_id: @run, launcher: launcher, github: FakeGithub.new,
 				context: { issue: 'x', answers: answers }).restore
 		end
 

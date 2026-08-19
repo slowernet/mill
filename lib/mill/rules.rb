@@ -49,7 +49,10 @@ module Mill
 		# risk of "network access inside a stage is unrestricted", and it was found
 		# the way everything else here was: the pr stage hit the wall on the first
 		# real run and asked rather than guessing.
-		NETWORK = { 'pr' => %w[github.com api.github.com], 'push' => %w[github.com api.github.com] }.freeze
+		# Only github.com, because these two stages push a branch and nothing more —
+		# mill makes every API call from outside the sandbox. Dropping
+		# api.github.com fell out of moving pull-request creation to Mill::Github.
+		NETWORK = { 'pr' => %w[github.com], 'push' => %w[github.com] }.freeze
 
 		# No `allow` key, ever. An allow list is advisory in headless mode — a tool
 		# in neither allow nor deny runs anyway — so confinement placed there turns

@@ -72,7 +72,7 @@ module Mill
 
 		def runner(launcher: nil, &announce)
 			@runner ||= begin
-				r = Mill::Runner.new(db: @db, run_id: @run_id,
+				r = Mill::Runner.new(db: @db, run_id: @run_id, github: @github,
 					launcher: launcher || default_launcher(&announce),
 					context: { issue: issue_body, spec_path: @spec_path, branch: @branch, base: base,
 						answers: @answers })

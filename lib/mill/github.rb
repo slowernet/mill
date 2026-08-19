@@ -123,6 +123,31 @@ module Mill
 
 		def stamp(body) = "#{MARKER}\n#{body}"
 
+		# mill opens the pull request, not the stage. The stage composes the body and
+		# pushes the branch — both of which work inside the sandbox — and mill makes
+		# the API call from out here.
+		#
+		# This is why: `gh` verifies TLS through the macOS Security framework, which
+		# the Bash sandbox blocks, measured across three attempts on 2026-08-19 while
+		# `curl` and `git push` reached the same host over the same allowlist. But it
+		# is the better shape regardless. `Mill::Github` is now the single seam for
+		# every call mill's side makes, which was previously only true of mill's own
+		# calls — and `gh pr merge` becomes unreachable by construction rather than
+		# by a deny rule that has to be remembered.
+		#
+		# Idempotent by recovery, not by flag: a crash between creating the pull
+		# request and recording its number reconciles on the next look rather than
+		# opening a second one.
+		def create_pull_request(repo, head:, base:, title:, body:)
+			existing = pr_for_branch(repo, head)
+			return existing if existing
+
+			run('pr', 'create', '--repo', repo, '--head', head, '--base', base,
+				'--title', title, '--body', body)
+			pr_for_branch(repo, head) or
+				raise Error, "gh pr create reported success but no pull request exists for #{head}"
+		end
+
 		# --- rules -------------------------------------------------------------
 
 		# mill is the sole writer of Status, and a comment is only a trigger when

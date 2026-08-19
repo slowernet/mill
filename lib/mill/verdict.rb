@@ -31,6 +31,7 @@ module Mill
 				questions: { type: 'array', items: { type: 'string' } }
 			}
 			properties[:artifact] = { type: %w[string null] } if config[:artifact]
+			properties.merge!(title: { type: 'string' }, body: { type: 'string' }) if stage == 'pr'
 			properties[:route] = { type: %w[string null], enum: ROUTES + [nil] } if stage == 'triage'
 			properties[:objections] = objections_schema if stage.start_with?('review:')
 
@@ -108,6 +109,7 @@ module Mill
 			check_objections
 			check_artifact
 			check_route
+			check_pull_request
 			self
 		end
 
@@ -201,6 +203,17 @@ module Mill
 			# The path is agent-controlled. A symlink loop or a vanished worktree
 			# costs the stage a strike; it does not take mill down.
 			fail!("artifact could not be resolved: #{e.message}")
+		end
+
+		# mill opens the pull request, so the pr stage has to hand it something to
+		# open. A stage reporting ok with no body has not finished its job, and
+		# accepting that would put an empty pull request in front of the one human
+		# gate in the whole design.
+		def check_pull_request
+			return unless @stage == 'pr' && status == 'ok'
+
+			fail!('pr must report a title') if @data[:title].to_s.strip.empty?
+			fail!('pr must report a body') if @data[:body].to_s.strip.empty?
 		end
 
 		# Only triage picks the route. The Evidence directive is the board's alone.

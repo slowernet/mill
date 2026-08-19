@@ -45,6 +45,7 @@ module Mill
 			Class.new do
 				define_method(:linked_branches) { |*| branches }
 				define_method(:issue) { |*| { number: 42, body: body } }
+				define_method(:create_pull_request) { |*, **| { number: 9, state: 'OPEN' } }
 			end.new
 		end
 
@@ -175,7 +176,9 @@ module Mill
 			verdict.define_singleton_method(:valid?) { true }
 			verdict.define_singleton_method(:status) { 'ok' }
 			verdict.define_singleton_method(:rejects?) { false }
-			verdict.define_singleton_method(:data) { { artifact: artifact, summary: 'done' } }
+			verdict.define_singleton_method(:data) do
+				{ artifact: artifact, summary: 'done', title: 'T', body: 'B' }
+			end
 			stream = Object.new
 			stream.define_singleton_method(:session_id) { 's' }
 			stream.define_singleton_method(:tokens) { { tokens_in: 1, tokens_out: 2 } }
