@@ -208,12 +208,18 @@ defensible; pick one before Plan 1 rather than growing both.
 ~/.mill/settings/<stage>.json                    permission rulesets, outside every worktree
 ~/.mill/secrets/                                 stage token, per-repo env files
 ~/.mill/worktrees/<repo>/<run-id>/               one worktree per run
-~/.mill/runs/<run-id>/verdict-<stage>-<invocation>.json   verdicts, written by mill
-~/.mill/logs/<run-id>/<stage>-<invocation>.jsonl          raw stream-json per attempt
+~/.mill/logs/<run-id>/<stage>-<invocation>.jsonl  raw stream-json per attempt
 ```
 
-`~/.mill` is `0700`. Verdicts and settings live outside the worktree deliberately: both are
-things the agent could otherwise rewrite.
+`~/.mill` is `0700`. Logs and settings live outside the worktree deliberately: both are things the
+agent could otherwise rewrite.
+
+**The verdict is a column, not a file.** An earlier draft wrote each one to
+`~/.mill/runs/<run-id>/verdict-<stage>-<invocation>.json` so a crashed run stayed readable. It goes
+to `stage_attempts.verdict_json` instead: that is what the UI reads anyway, it survives a crash at
+least as well, and it means one fewer path a future change could point at the worktree by mistake.
+The reason the verdict lives outside the repo is unchanged — mill is the only writer, so no stage
+can commit one and no later checkout can restore one.
 
 Repo clones are *not* under `~/.mill`. mill uses the clone you already have.
 
@@ -557,15 +563,12 @@ what happened, so it starts a fresh session. If `--resume` fails for any reason,
 a fresh session with the prior context appended. [The attempt ledger](#the-attempt-ledger) says
 what each of those endings costs.
 
-**The verdict is the stage's last message, not a file it writes.** Stages run with
-`--output-format stream-json`, `Mill::Claude` already parses that stream, and the verdict is the
-final structured message on it. mill validates that message and then writes it itself to
-
-```
-~/.mill/runs/<run-id>/verdict-<stage>-<invocation>.json
-```
-
-so a crashed run is still readable afterwards. The agent never touches that path.
+**The verdict travels on the stream, not in a file the stage writes.** Stages run with
+`--output-format stream-json`, `Mill::Claude` already parses that stream, and the verdict arrives
+on the closing `result` line — as `structured_output`, because every launch also passes
+`--json-schema` and the CLI turns that into a forced tool call. mill validates it and records it in
+`stage_attempts.verdict_json`, so a crashed run is still readable afterwards. The agent never
+writes it anywhere.
 
 The first draft had the agent write the file. That made the toolset table and this contract
 contradict each other: `triage` and `review:plan` hold only `Read`, `Glob`, and `Grep`, so neither
@@ -1253,8 +1256,9 @@ Faraday handles the token exchange and userinfo fetch, matching `rep`.
 
 ```
 GET  /                 run list: subject, route, stage, status, tokens, disk, health
-GET  /runs/:id         stage timeline, per-stage token breakdown, artifacts, verdicts, log tail
-GET  /runs/:id/log     JSON tail, offset-paginated
+GET  /runs/:id         stage timeline, per-stage token breakdown, artifacts, verdicts
+GET  /runs/:id/attempts/:stage/:invocation        one attempt: verdict, what it did, log tail
+GET  /runs/:id/attempts/:stage/:invocation/log    rendered tail, offset-paginated
 POST /runs/:id/kill    kill the process group, mark killed, set Status
 POST /pause            stop claiming new work; running stages continue
 POST /resume           claim again
@@ -1262,6 +1266,27 @@ GET  /repos            read-only diagnostics: prepared state, resolved clones, p
 GET  /worktrees        list all worktrees: run, branch, status, disk used
 POST /worktrees/:id/delete  remove a worktree manually
 ```
+
+**The log belongs to an attempt, not to a run.** Logs live at
+`~/.mill/logs/<run-id>/<stage>-<invocation>.jsonl`, and a run has as many as it had launches — the
+ledger deliberately permits several invocations of one stage, and the interesting comparison is
+usually *between* them: what did the retry do differently? A route keyed on the run alone cannot
+say which one it means, so the timeline links to each attempt and the tail is scoped to one.
+
+**The endpoint renders; the client stays dumb.** Raw `stream-json` is not something a person reads
+— it is `{"type":"assistant","message":{...}}` several hundred times over. Working out why a stage
+failed on 2026-08-19 took three passes over the file: list every line and its type, find the
+`result` line, then pull one field out of it. A tail that appends raw lines would have shown none
+of that. So the endpoint returns lines already flattened to `{ at, kind, text }` — a tool call and
+its result, a message, a rate-limit event, mill's own annotations — and the browser keeps its
+existing job of appending them and escaping them. Dumb is right for the transport and wrong for
+the display, and the rendering belongs on the side that already has the parser.
+
+**The attempt page leads with the verdict, not the transcript.** What a person wants first is what
+the stage decided, what it produced, what it cost, and — if it failed — which validation error
+fired. The raw tail sits underneath for when that is not enough. An attempt whose verdict failed
+validation shows the payload it *did* return, because that is exactly the case where the summary
+cannot be trusted and the raw material is the whole point.
 
 Killing, pausing, and worktree deletion are the write paths. Pausing exists because mill cannot
 see you

@@ -718,8 +718,18 @@ onall('.worktree-delete', 'click', async (e) => {
 ## The log tail
 
 The log tail is the only live-updating view in mill. Keep it dumb: poll a JSON endpoint, append
-lines, stop when the run finishes. No client-side state machine, no reconnection logic, no
+lines, stop when the attempt finishes. No client-side state machine, no reconnection logic, no
 diffing.
+
+**The tail belongs to one attempt.** Logs are written per launch —
+`~/.mill/logs/<run-id>/<stage>-<invocation>.jsonl` — and a stage can be launched several times in
+one run, so the run detail page links to each attempt rather than tailing "the run".
+
+**The endpoint renders; this stays dumb.** What mill spawns emits `stream-json`, which is not
+something a person reads. The endpoint flattens it to `{ at, kind, text }` — a tool call and its
+result, a message, a rate-limit event, mill's own annotations — and the job here is appending and
+escaping, exactly as below. Do not parse `stream-json` in the browser: the parser already exists on
+the other side, and putting a second one here is how the two drift.
 
 ```js
 ready(() => {
@@ -727,12 +737,14 @@ ready(() => {
 	if (!out) return
 
 	let offset = parseInt(out.dataset.offset || '0')
-	const runId = out.dataset.runId
+	const { runId, stage, invocation } = out.dataset
 
 	const poll = async () => {
-		const data = await getjson(`/runs/${runId}/log?offset=${offset}`)
+		const url = `/runs/${runId}/attempts/${stage}/${invocation}/log?offset=${offset}`
+		const data = await getjson(url)
 		if (data.lines.length) {
-			out.insertAdjacentHTML('beforeend', data.lines.map(l => `<div>${escapeHtml(l)}</div>`).join(''))
+			out.insertAdjacentHTML('beforeend', data.lines.map(l =>
+				`<div class="log-line log-line--${escapeHtml(l.kind)}">${escapeHtml(l.text)}</div>`).join(''))
 			out.scrollTop = out.scrollHeight
 			offset = data.offset
 		}
@@ -743,9 +755,11 @@ ready(() => {
 })
 ```
 
-The endpoint returns `{ lines: [...], offset: <new offset>, finished: <bool> }`. When `finished`
-is true the loop stops and the tail becomes a static transcript. Every line goes through
-`escapeHtml` — log content is agent output and must never be trusted as markup.
+The endpoint returns `{ lines: [{ at, kind, text }], offset: <new offset>, finished: <bool> }`.
+When `finished` is true the loop stops and the tail becomes a static transcript. `kind` is what the
+line was — `tool`, `result`, `message`, `rate_limit`, `mill` — and drives styling only; nothing
+branches on it. Both `kind` and `text` go through `escapeHtml`: log content is agent output and
+must never be trusted as markup, and `kind` reaches a class attribute.
 
 ## Icons
 
@@ -780,7 +794,8 @@ pre-written SHA file.
 | Page | Components |
 |---|---|
 | `GET /` | Stat tile (running, blocked, tokens today, disk), Table (run list), Badge (status), Pagination |
-| `GET /runs/:id` | Card (stage timeline), Tabs (stages / verdicts / log), Table (per-stage token breakdown), Badge, Dialog (confirm kill), Spinner, log tail |
+| `GET /runs/:id` | Card (stage timeline, one row per attempt, linking to it), Table (per-stage token breakdown), Badge, Dialog (confirm kill), Spinner |
+| `GET /runs/:id/attempts/:stage/:invocation` | Card (verdict first: status, artifact, questions or objections, cost), Badge, log tail underneath |
 | `GET /worktrees` | Table (run, branch, status, disk), Button (delete per row), Dialog (confirm delete) |
 | `GET /repos` | Card, Table (prepared state, resolved clone, prerequisites), Badge (healthy / unhealthy) |
 | Layout | Sidebar nav item, Switch (pause claiming), Toast, health banner |
