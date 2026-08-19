@@ -1807,6 +1807,54 @@ given that verification is the bottleneck. mill defers it; see [Deferred](#defer
   behaviour change, expensive to read. A factory producing refactor PRs you skim makes
   comprehension debt worse while appearing to reduce it. One concern per issue.
 
+- **Severity calibration across contexts.** Observed on the first real run, 2026-08-19.
+  `review:code` raised five objections and rated **every one `low`**. An independent Claude Code
+  session reviewing the same commit rated one **high**, three **medium** and three **low** — and
+  found three defects mill's reviewer missed entirely, including an unvalidated field that takes
+  out a whole report. Same model family, same artifact, different harness, different scale. Since
+  only `high` and `critical` re-run a stage, the practical effect is that the rejection path has
+  never fired, not for want of defects but for want of severity.
+
+  Before tuning the threshold, work out why the scales differ, because the obvious fix makes it
+  worse. The thinking, so nobody has to rediscover it:
+
+  *Severity is doing two jobs and nothing says which.* For the human reading the pull request it
+  describes how bad the defect is. For mill it is a control input that spends another Opus stage
+  and charges a strike. A reviewer that understands the second job will reserve `high` for things
+  worth a whole re-run — which is thoughtful, and which systematically under-rates the first job.
+  A reviewer that only understands the first will bounce the stage on everything, which is the
+  non-convergence failure in [Known limitations](#known-limitations). The vocabulary cannot be
+  calibrated while it means both things.
+
+  *Cost to fix is missing from the vocabulary entirely.* What separates "add one assertion" from
+  "redesign what a repeat `add` means" is not how bad it is, it is how expensive it is to put
+  right. On the first run a `low` naming one missing assertion shipped unfixed while the body
+  described it precisely — mill diagnosed a hole, wrote it up well, and handed over the fix as
+  homework. There is no way to say *trivial to fix, and I would rather not ship it.*
+
+  *It is measurable, which is the good news.* Give several reviewers the same artifact under
+  different framings — knowing and not knowing that a `high` costs a re-run, told and not told it
+  is a rehearsal — and compare the distributions. That turns a hunch into a number, and the same
+  harness then tells you whether any fix worked.
+
+  Three things to try, in value order:
+
+  1. **Split the axes.** Keep `severity` as the description and add a separate field for whether
+     the reviewer thinks the stage should re-run — an explicit `blocking: true`, argued for in
+     `notes`. mill's rule stops being a severity threshold and becomes "did the reviewer ask".
+     Cheapest, and it stops asking one word to mean two things.
+  2. **Calibrate against a fixture.** A small set of defects with agreed severities, run through
+     the reviewer prompt periodically. Drift then shows up as a test failure rather than as a
+     surprise six runs later, and it makes the deep-review refuters comparable too.
+  3. **A cheap-fix path.** A finding that is one assertion, named precisely, is the case where
+     `review:code` having no write tools costs more than it saves. Not a licence to fix code —
+     specifically test-only gaps the reviewer can state in a line.
+
+  *Risk to carry forward:* this matters beyond one stage. Any comparison of severities across
+  stages, across runs, or over time — historical averages, deep review's refuters, an eventual
+  "was this run healthy" measure — assumes a stable scale, and there is no evidence yet that mill
+  has one.
+
 - **Directives as labels.** Currently board fields. Labels would be two clicks from an issue page
   without opening the board, at the cost of creating labels in every repo mill prepares.
 - **Browser chat UI.** Session ids and log paths are stored per attempt.
