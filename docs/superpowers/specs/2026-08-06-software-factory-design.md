@@ -44,7 +44,8 @@ Design doc, begun 2026-08-06. Git holds the history of how it changed.
   - [Spike — the permission model](#spike--the-permission-model)
   - [Plan 1 — Seams and doctor](#plan-1--seams-and-doctor)
   - [Plan 2 — One run by hand — the keystone](#plan-2--one-run-by-hand--the-keystone)
-  - [Plan 3 — Autonomy](#plan-3--autonomy)
+  - [Plan 3a — Autonomy](#plan-3a--autonomy)
+  - [Plan 3b — Resilience](#plan-3b--resilience)
   - [Plan 4 — Observe and interrupt](#plan-4--observe-and-interrupt)
   - [Plan 5 — Other routes](#plan-5--other-routes)
   - [Not yet planned](#not-yet-planned)
@@ -138,7 +139,8 @@ Plans 1 and 2 are complete, and a real pull request came out of the far end on 2
 | The `plan` route, end to end | **Demonstrated.** `slowernet/mill-scratch#2`, 18 minutes, no strikes |
 | `Mill::Poller` | Not built. No board reads, no comment cursors, no triggers |
 | `Mill::Supervisor` | Not built. No repo preparation, worktree lifecycle, concurrency cap, lock clearing, or reaping |
-| Sleep and wake | Clock pair built; nothing reads it. No settle window, no stall detector, no power assertion |
+| Sleep and wake | Clock pair built and its premise measured; nothing reads it. No settle window, no stall detector, no power assertion |
+| The Linux server, which is the primary target | **Never run.** Every line of mill has only ever executed on macOS, including all fourteen boundary tests |
 | Web UI | Not built. No routes, no kill switch, no log view |
 | `fast` and `iterate` routes | Not built. `diagnose`, `implement:fast` and `push` have config and rulesets but no prompts, and have never run |
 | Board writes, comments | `Mill::Github#comment` exists; nothing calls it. mill has never written a Status |
@@ -227,8 +229,17 @@ for the log: it is capped by byte count, so the cut is realigned to a character 
 leaving a half-written character in a file the UI tails and a replay re-parses.
 
 **Stack.** Ruby, Roda, Sequel, SQLite, Puma, Minitest, and Faraday for the OAuth exchange — stdlib
-for everything else. mill runs on macOS and Linux; the OS-specific facts it needs sit behind one
-platform module, listed in [Sleep and wake](#sleep-and-wake).
+for everything else.
+
+**mill's home is a Linux server, and the laptop is the development mode.** A factory that only
+runs while a lid is open is not a factory; the point of the thing is that you release work and
+walk away, and a machine that never sleeps is where that actually holds. macOS stays supported
+because that is where mill is built and debugged, and because the person writing a spec is sitting
+at it. Both targets are real, and the four OS-specific facts mill needs sit behind one platform
+module listed in [Sleep and wake](#sleep-and-wake) — but where the two disagree, the server is the
+case to get right first. Two consequences run through this document: everything about sleep is a
+laptop concern and inert on the server, while the stall detector, the UI's identity check, and the
+locale problem below are server concerns that the laptop merely tolerates.
 
 Surveyed and deliberately rejected, so it need not be re-argued: a **state machine gem** (AASM,
 Statesman, MicroMachine) — the six run statuses are a case statement, and the stage graph is a
@@ -253,6 +264,7 @@ defensible; pick one before Plan 1 rather than growing both.
 ~/.mill/mill.db                                  state
 ~/.mill/settings/<stage>.json                    permission rulesets, outside every worktree
 ~/.mill/secrets/                                 stage token, per-repo env files
+~/.mill/clones/<owner>-<repo>/                   clones mill made itself
 ~/.mill/worktrees/<repo>/<run-id>/               one worktree per run
 ~/.mill/logs/<run-id>/<stage>-<number>.jsonl  raw stream-json per attempt
 ```
@@ -267,7 +279,12 @@ least as well, and it means one fewer path a future change could point at the wo
 The reason the verdict lives outside the repo is unchanged — mill is the only writer, so no stage
 can commit one and no later checkout can restore one.
 
-Repo clones are *not* under `~/.mill`. mill uses the clone you already have.
+**mill clones what it does not have.** On a server nobody keeps a directory of working copies, so
+the clone has to come from somewhere: mill clones the repo into `~/.mill/clones/` the first time
+an item from it arrives. On a laptop it prefers a clone you already keep, because working against
+the same checkout you use is the point of running it there — so preparation looks in `MILL_CLONES`
+first, and only clones when it finds nothing. See
+[Setting up, and preparing a repo](#setting-up-and-preparing-a-repo).
 
 ## Ingress
 
@@ -1024,11 +1041,11 @@ could kill it — the silence window and the working-time clock — stop countin
 `rate_limited_at` is current. Otherwise three concurrent Opus runs hitting the limit would time
 each other out, twice each, and fail runs that were never unhealthy.
 
-The per-launch clock uses `Process::CLOCK_UPTIME_RAW`, which is documented not to advance during
-sleep, while `CLOCK_MONOTONIC` and wall clock both count it on Darwin. Closing the lid mid-stage
-would otherwise reap a healthy attempt as a timeout — twice, on the only deployment target mill
-supports. **That difference is an untested claim, and all of [Sleep and wake](#sleep-and-wake)
-rests on it**; see the measurement gate in [Build order](#build-order).
+The per-launch clock uses the awake clock — `CLOCK_UPTIME_RAW` on Darwin, `CLOCK_MONOTONIC` on
+Linux — which does not advance while the machine sleeps, unlike the wall clock. This matters only
+on the laptop, and there it matters twice: closing the lid mid-stage would otherwise reap a healthy
+attempt as a timeout, and then reap its retry the same way. **Measured 2026-08-19** — see
+[Sleep and wake](#sleep-and-wake).
 
 **There is no global daily ceiling, deliberately.** The board bounds what work exists, and mill
 never adds items to it — you do. A global cap would only duplicate the board.
@@ -1158,8 +1175,13 @@ allowlist: the token covers selected repositories only.
 **mill prepares a repo lazily.** When an item arrives from a repo mill has not prepared, the
 supervisor prepares it on first touch:
 
-1. **Resolve the clone.** Scan `~/code` for a repo whose `origin` matches. If the match is
-   ambiguous or missing, mill says so rather than guessing.
+1. **Resolve the clone, and clone it if there is none.** `MILL_CLONES` is a list of directories
+   holding working copies you keep — on a laptop it defaults to `~/code`, and on a server it is
+   normally empty. mill scans them for a repo whose `origin` matches. One match is used as it
+   stands. Several matches block the item and name them, because picking one silently means
+   committing to a checkout you did not choose. No match is not an error: mill clones the repo
+   into `~/.mill/clones/<owner>-<repo>` and uses that. A clone mill made is mill's to reap; one
+   of yours is never touched beyond local git config.
 2. **Set `gc.auto=0` and `maintenance.auto=0`** so a stage's commit cannot trigger a gc that
    rewrites shared refs while other runs hold them.
 3. **Read `.mill.yml`** from the base branch into `repos.config_json`: base branch, test
@@ -1312,17 +1334,20 @@ the `Host` allowlist are config rather than constants because they differ by dep
 POST requires a CSRF token via Roda's `route_csrf`, because the browser treats a cross-origin
 form POST as a CORS simple request and does not preflight it.
 
-**Two deployments, two access models.**
+**Two deployments, two access models**, and the server is the one to build for.
+
+On a server the UI is reachable over the network, so it needs an identity check of its own. mill
+uses Google OAuth with an email allowlist — the same shape as `~/code/rep`: an `AuthApp` mounted at
+`/auth`, an `Authentication` helper exposing `current_user`, `logged_in?`, and `require_login!`,
+and `MILL_ADMIN_EMAILS` as a comma-separated list checked against the verified address. mill needs
+no user table; the verified email in the session is the whole model.
 
 On a laptop mill binds `tcp://127.0.0.1:9494` and allows only `localhost:9494` and
-`127.0.0.1:9494` as `Host`, which defeats DNS rebinding. Nothing else is needed: the loopback
-interface is the boundary.
-
-On a server the UI is reachable over the network, so it needs an identity check of its own.
-mill uses Google OAuth with an email allowlist — the same shape as `~/code/rep`: an `AuthApp`
-mounted at `/auth`, an `Authentication` helper exposing `current_user`, `logged_in?`, and
-`require_login!`, and `MILL_ADMIN_EMAILS` as a comma-separated list checked against the verified
-address. mill needs no user table; the verified email in the session is the whole model.
+`127.0.0.1:9494` as `Host`, which defeats DNS rebinding. The loopback interface is the boundary,
+so the sign-in is skipped. That skip is the one place the two deployments genuinely differ, and it
+is config rather than a code path: an unset `MILL_ADMIN_EMAILS` with a loopback bind means open,
+and mill refuses to start bound to anything else with the list empty. Otherwise the mistake is
+silent and the kill switch is on the public internet.
 
 Four things follow, and none is optional:
 
@@ -1453,6 +1478,13 @@ and then the reaper picks it up.
 
 ## Sleep and wake
 
+**Almost all of this is a laptop concern.** A server does not idle-sleep, so on mill's primary
+target the settle window never opens and the power assertion has nothing to prevent. Two things in
+here are not laptop-specific and carry the section on their own: the awake/continuous clock pair,
+because every deadline has to read one or the other whatever the host, and the stall detector,
+because a half-open socket is a dead socket on any kernel and it is what catches a wedged stage
+regardless of cause.
+
 macOS sleep kills nothing. It freezes every process and restores it on wake — idle sleep, a
 closed lid, and standby alike — so a `claude -p` subprocess comes back exactly where it was.
 Nothing needs saving across a sleep, and mill gets no warning before one, because a pre-sleep
@@ -1483,13 +1515,16 @@ wedged stage regardless of cause.
 long the machine slept, with no NTP drift mixed in. Both come from `Process.clock_gettime`, so
 this costs nothing beyond the clock the per-launch timeout already reads.
 
-**This is the one claim in the document that nothing has tested**, and this whole section depends
-on it. The two clocks are documented to differ in exactly this way — that is why both exist — but
-documented is not measured, and no spike has run. If they turn out to behave identically on this
-machine, mill cannot detect sleep at all: the settle window never opens, every deadline silently
-counts time asleep, and a night with the lid shut reaps every run in flight as timed out, with the
-defence apparently in place and doing nothing. The measurement is ten lines and needs someone to
-shut a laptop; it is a gate on Plan 3 in [Build order](#build-order).
+**Measured 2026-08-19 on arm64-darwin23**, which closed the one claim in this document that
+nothing had tested. Sampled together, `CLOCK_UPTIME_RAW` read 278,278 seconds and `CLOCK_MONOTONIC`
+read 682,579 — both counting from the same boot, so the machine had been powered up for 7.9 days
+and awake for 3.2 of them. A 4.7-day gap is orders of magnitude beyond any clock adjustment, so the
+two clocks do differ, in the documented direction. Sleep is detectable on Darwin and every deadline
+below has a real signal underneath it.
+
+Had they matched, mill could not have detected sleep at all: the settle window would never open,
+every deadline would silently count time asleep, and a night with the lid shut would reap every run
+in flight as timed out, with the defence apparently in place and doing nothing.
 
 Which clock a deadline reads is a correctness question:
 
@@ -1742,10 +1777,18 @@ given that verification is the bottleneck. mill defers it; see [Deferred](#defer
   comment marker are the only signals.
 - **The permission ruleset is the boundary, and `implement` needs a wide one.** Layers 2–4
   narrow the consequences; they do not make a stage harmless.
-- **Single machine, and on a laptop the factory stops when the lid shuts.** mill recovers
-  whatever was in flight — see [Sleep and wake](#sleep-and-wake) — but nothing progresses while
-  the machine is asleep. A server deployment avoids that entirely and is the expected home;
-  the laptop remains supported for development, which is why the platform module exists.
+- **Single machine.** One host runs everything, and mill has no way to hand a run to another. On
+  the server that is a capacity limit and nothing worse. On the laptop the factory also stops when
+  the lid shuts: mill recovers whatever was in flight — see [Sleep and wake](#sleep-and-wake) —
+  but nothing progresses while the machine is asleep, which is the main reason the server is the
+  expected home rather than the laptop.
+- **Containment was measured on Darwin only.** Every claim in [Containment](#containment) rests on
+  observed sandbox behaviour, and the fourteen boundary tests that assert it have only ever run on
+  macOS. The sandbox is a Claude Code feature rather than a kernel one, but its enforcement is not,
+  and at least one finding is visibly platform-specific: `gh` fails inside the sandbox because it
+  asks the macOS Security framework to verify the certificate chain, which has no Linux analogue.
+  The suite has to run on the server before the server is trusted, and a difference there is a
+  containment gap rather than a portability annoyance.
 - **No unattended path from a vague idea to a PR**, by design. If you have not thought it
   through, mill will not think it through for you.
 - **The review loop may not converge.** The reviewer skill assumes defects exist, and a `high`
@@ -1880,30 +1923,36 @@ carry `--permission-mode acceptEdits`, which still honours deny rules. `--settin
 the operator's settings rather than replacing them. Absolute-path deny rules silently do nothing.
 And the working directory, not the deny list, is what keeps a stage out of `~`.
 
-**Two measurements remain, and both need you at the machine.**
+**One measurement remains, and it is the one that decides whether mill's primary deployment
+exists.**
 
-1. **Does the awake clock really stop during sleep?** Record
-   `Process.clock_gettime(Process::CLOCK_MONOTONIC)` and
-   `Process.clock_gettime(Process::CLOCK_UPTIME_RAW)`, shut the lid for ten minutes, wake, record
-   both again. Equal deltas mean mill can never detect sleep and [Sleep and wake](#sleep-and-wake)
-   needs rebuilding on a different signal. **Gate on Plan 3.**
-2. ~~**Can the Projects v2 API report whether a built-in workflow is enabled?**~~ **Settled
+1. **Does `claude` authenticate headlessly on the Linux host against the subscription?** If it
+   cannot, the server deployment does not work at all and mill is a laptop tool after all —
+   which contradicts [Architecture](#architecture) and re-opens every decision that follows from
+   it. Ten minutes on the VPS, and cheap for what it settles. **Gate on Plan 3a.** The boundary
+   suite has to run there too before the server is trusted; see
+   [Known limitations](#known-limitations).
+
+Settled since:
+
+2. ~~**Does the awake clock really stop during sleep?**~~ **Settled 2026-08-19 on
+   arm64-darwin23.** The two clocks, sampled together, disagreed by 4.7 days across a 7.9-day
+   uptime — far beyond any clock adjustment, and in the documented direction. Sleep is detectable;
+   the numbers and what they rule out are in [Sleep and wake](#sleep-and-wake).
+3. ~~**Can the Projects v2 API report whether a built-in workflow is enabled?**~~ **Settled
    2026-08-19 by schema introspection: yes.** `ProjectV2.workflows` is a connection and
    `ProjectV2Workflow` carries `enabled: Boolean`, so doctor checks it directly and the fallback
    sentinel described in [The board is the queue](#the-board-is-the-queue) is not needed for the
    check. Doctor reads the project from `MILL_PROJECT` and `MILL_PROJECT_OWNER` and fails when
    they are unset, rather than skipping the check silently.
-3. **Does `claude` authenticate headlessly on the Linux host against the subscription?** If it
-   cannot, the server deployment does not work at all and mill is laptop-only after all. Ten
-   minutes on the VPS. **Gate on deploying anywhere but the laptop.**
-
 One more is **still open**, and Plan 1 did not close it: **does the tee see a command announced
 when it starts, or only when it finishes?** The stall detector's ability to tell a slow test suite
 from a wedged stage depends on it. `Mill::Stream` implements the outstanding-command signal and
 `test/fixtures/stream/tool_pending.jsonl` exercises it, but that fixture is **hand-authored, not
 recorded** — it asserts the answer rather than establishing it. Replace it with a recording from a
-real `claude -p` that runs a slow command before trusting the silence window. **Gate on Plan 3**,
-where the stall detector is actually built.
+real `claude -p` that runs a slow command before trusting the silence window. **Gate on Plan 3b**,
+where the stall detector is actually built. This one needs no human: it is a stage launch that
+runs `sleep`.
 
 **The plans are numbered, not lettered**, because they are parts in sequence rather than
 alternatives — "plan B" reads as the fallback you take when plan A fails, and each of these is a
@@ -1913,7 +1962,7 @@ written by the same `writing-plans` skill mill's own `plan` stage uses.
 **Write one plan at a time**, and execute it before writing the next — doing Plan 1 teaches things
 that change Plan 2, and a stale plan actively misleads. Each plan names the spec sections it
 implements rather than expecting an agent to read all of this. mill works on mill only after Plan
-D, when the kill switch and the log tail exist; before that, it is two unreliable things at once.
+4, when the kill switch and the log tail exist; before that, it is two unreliable things at once.
 
 ### Spike — the permission model
 
@@ -2022,19 +2071,39 @@ reviewed stage has only ever run against scripted verdicts. Nor has the strike r
 also refused, unprompted, to wrap a command in a script to route around an approval gate, calling it
 evasion of a permission control; containment held on the honour system as well as the mechanical one.
 
-### Plan 3 — Autonomy
+### Plan 3a — Autonomy
 
 **Not started.** The clock pair exists and nothing reads it.
 
-- Supervisor: prepares a repo on first touch, manages the worktree lifecycle, removes stale
-  locks, enforces the concurrency cap, kills a process group
-- Poller: reconciles the board, checks who commented, advances comment cursors, applies the
-  marker rule
-- Sleep and wake: the awake-time clock pair, the settle window, the stall detector, the
-  `caffeinate` assertion
+- `Mill::Workers` and the Roda host: `app.rb`, `config.ru`, both threads under one supervising
+  loop that restarts either with backoff, `GET /` reporting whether both heartbeats are fresh,
+  and `MILL_WORKERS=off` for editing the web layer without launching a run
+- Supervisor: prepares a repo on first touch, resolves or makes the clone, manages the worktree
+  lifecycle, removes stale locks, enforces the concurrency cap, spawns a thread per claimed run,
+  reaps a process group against a verified identity
+- Poller: reconciles the board, sweeps comments behind a transactional cursor, applies the marker
+  rule and the collaborator rule
+- Board writes, which mill has never done: Status on claim, block, finish and failure, re-driven
+  from `desired_board_status` when GitHub was unreachable, and blocking questions posted as a
+  comment on the subject
+- Secrets injection and the scoped stage token, so a repo whose suite needs an `.env` can pass
 
-*Demonstrable:* set Status to `Ready`, walk away, come back to a PR. Close the lid mid-stage and
-the run recovers instead of burning a strike.
+*Demonstrable:* set Status to `Ready`, walk away, come back to a PR.
+
+Only two of the five triggers dispatch, because only the `plan` route exists: an item that is
+`Ready` with no active run, and a comment on a `Blocked` item. The sweep itself is built in full,
+so Plan 5 adds dispatch and touches none of it.
+
+### Plan 3b — Resilience
+
+**Not started.** Depends on 3a having run unattended for long enough to have opinions.
+
+- The stall detector, which is the part of [Sleep and wake](#sleep-and-wake) that matters on the
+  server as much as the laptop
+- The settle window and sleep detection, and the `caffeinate` assertion — laptop only
+- The reaper: retention of finished runs, and deleting logs when a run row goes
+
+*Demonstrable:* close the lid mid-stage and the run recovers instead of burning a strike.
 
 ### Plan 4 — Observe and interrupt
 

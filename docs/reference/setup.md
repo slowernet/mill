@@ -1,8 +1,12 @@
 # mill setup runbook
 
-One-time, account-level setup. Per-repo preparation is **lazy** — mill resolves the clone,
-applies git config, and reads `.mill.yml` the first time an item from that repo reaches the
+One-time, account-level setup. Per-repo preparation is **lazy** — mill resolves the clone or makes
+one, applies git config, and reads `.mill.yml` the first time an item from that repo reaches the
 board. There is no repo watchlist and nothing to enable.
+
+mill's home is a Linux server; the laptop is where it gets built. Sections 1 to 8 apply to both.
+Section 9 is the server, and you can skip it only while you are developing mill rather than
+running it.
 
 These steps are a runbook rather than a script because two of them cannot be automated:
 minting a fine-grained PAT has no API, and choosing which repos a token may touch is a
@@ -21,7 +25,7 @@ running it over trusting this document — it checks reality.
 - [6. Permission rulesets](#6-permission-rulesets)
 - [7. Branch protection](#7-branch-protection)
 - [8. Per-repo secrets](#8-per-repo-secrets)
-- [9. Server deployment (optional)](#9-server-deployment-optional)
+- [9. Server deployment](#9-server-deployment)
 - [10. Verify](#10-verify)
 - [11. A scratch repo for rehearsals](#11-a-scratch-repo-for-rehearsals)
 
@@ -227,13 +231,45 @@ that repo's `.mill.yml` so `mill:doctor` can check they are present.
 Use test-scoped values, not production ones. Nothing prevents an agent from printing an
 environment variable into a log it is allowed to write.
 
-## 9. Server deployment (optional)
+## 9. Server deployment
 
-Skip this on a laptop, where mill binds loopback and needs no identity check.
+**This is where mill is meant to run.** A factory that only works while a lid is open is not a
+factory, so the Linux box is the real deployment and the laptop is the development mode. Skip this
+section only while you are building mill rather than using it.
 
-On a server the UI is reachable over the network, so it needs Google OAuth with an email
-allowlist. You need a hostname you control (a subdomain of a domain you already own is enough),
-TLS in front of Puma, and an OAuth client:
+**Do this step before any of the rest of the section.** Install `claude` on the box, sign in, and
+run one `claude -p` there. If a headless host cannot authenticate against your subscription, the
+server deployment does not work at all and nothing below matters. It costs ten minutes and it
+decides whether mill has a primary deployment.
+
+Then run the boundary suite on the box:
+
+```
+bundle exec rake test:boundary
+```
+
+Every containment claim mill makes was measured on macOS. The suite is what asserts them, and it
+has never run on Linux. A failure here is a containment gap, not a portability annoyance — treat
+it as a blocker and do not run stages on that host until it passes.
+
+### Clones
+
+On a laptop mill uses working copies you already keep. A server has none, so it makes its own:
+
+```
+MILL_CLONES=/srv/checkouts:/home/mill/code    # optional; directories of clones you keep
+```
+
+mill scans those for a repo whose `origin` matches, and clones into `~/.mill/clones/<owner>-<repo>`
+when it finds nothing. Leaving `MILL_CLONES` unset on a server is normal and means mill clones
+everything itself. Several matches in one of those directories blocks the item rather than
+choosing for you, so keep one clone per repo in them.
+
+### Access
+
+The UI is reachable over the network here, so it needs Google OAuth with an email allowlist. You
+need a hostname you control (a subdomain of a domain you already own is enough), TLS in front of
+Puma, and an OAuth client:
 
 1. **DNS and TLS.** Point a hostname at the box and terminate TLS with a reverse proxy. Google
    refuses a plain-HTTP redirect URI for anything but localhost, so this is a precondition, not
@@ -243,14 +279,41 @@ TLS in front of Puma, and an OAuth client:
 3. **Environment.** Set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, a stable
    `SESSION_SECRET`, and `MILL_ADMIN_EMAILS` as a comma-separated allowlist. Set the bind address
    and the `Host` allowlist to the real hostname.
-4. **Verify `claude` authenticates on the box.** Run one `claude -p` there before trusting the
-   deployment. If a headless host cannot authenticate against your subscription, the server
-   deployment does not work and mill is laptop-only.
 
-Anything on the network can reach the sign-in page, and the allowlist is what stands between it
-and a kill switch. Binding to a private network — Tailscale or a VPN — instead of the public
-internet is a reasonable second layer, and Google will still accept the redirect URI provided the
-name resolves publicly and carries a valid certificate.
+mill refuses to start bound to anything but loopback with an empty `MILL_ADMIN_EMAILS`, because
+the alternative is a kill switch on the public internet with nothing in front of it. Anything on
+the network can reach the sign-in page, and the allowlist is what stands between it and that
+switch. Binding to a private network — Tailscale or a VPN — instead of the public internet is a
+reasonable second layer, and Google will still accept the redirect URI provided the name resolves
+publicly and carries a valid certificate.
+
+### Running it
+
+The poller and the supervisor are threads inside the Puma process, so running mill is running the
+web server:
+
+```ini
+# /etc/systemd/system/mill.service
+[Service]
+User=mill
+WorkingDirectory=/home/mill/mill
+Environment=RACK_ENV=production
+Environment=LANG=C.UTF-8
+EnvironmentFile=/home/mill/.mill/env
+ExecStart=/usr/local/bin/bundle exec puma -C config/puma.rb
+Restart=always
+```
+
+`LANG` matters more than it looks. A unit with no locale gives Ruby a US-ASCII default, and mill
+pins UTF-8 at load precisely because that is the expected condition here — but a correct locale
+costs nothing and keeps every other tool on the box honest too.
+
+Set `MILL_WORKERS=off` in the environment to run the web UI without the factory, which is what you
+want while editing it.
+
+**Sections 9's clone, systemd and workers parts land with Plan 3a**, which is not built yet. The
+OAuth and TLS parts land with Plan 4. The authentication check and the boundary suite at the top
+of this section you can and should do now.
 
 ## 10. Verify
 
