@@ -250,6 +250,37 @@ module Mill
 			end
 		end
 
+		# The log is what the UI tails and what a replay parses. Cutting a line at a
+		# byte offset lands mid-character on any multibyte text, and the truncated
+		# log is then not valid UTF-8 at all.
+		def test_truncating_never_cuts_a_character_in_half
+			with_log do |log, dir|
+				with_cap(200) do
+					script = ['ruby', '-e', '$stdout.set_encoding(Encoding::UTF_8); ' \
+						'puts([0x1F6A2].pack("U") * 200)']
+					spawn_in(log, dir).run(script)
+					bytes = File.binread(log).force_encoding(Encoding::UTF_8)
+
+					assert_predicate bytes, :valid_encoding?, 'the truncated log is not valid UTF-8'
+					assert_includes bytes, 'log truncated at cap'
+				end
+			end
+		end
+
+		# Emoji and accented text are ordinary input: they arrive in issue bodies,
+		# in comments, and in the files a stage reads.
+		def test_non_ascii_output_reaches_the_log_intact
+			with_log do |log, dir|
+				text = [0x1F6A2].pack('U') + ' caf' + [0x00E9].pack('U')
+				script = ['ruby', '-e', '$stdout.set_encoding(Encoding::UTF_8); require "json"; ' \
+					'puts({ type: "system", note: ARGV[0] }.to_json)', '--', text]
+				result = spawn_in(log, dir).run(script)
+
+				assert_predicate result, :success?
+				assert_includes File.read(log, encoding: 'UTF-8'), text
+			end
+		end
+
 		private
 
 		def with_cap(bytes)

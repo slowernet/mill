@@ -167,6 +167,19 @@ in a supervising loop that logs the exception and restarts the thread with backo
 `Thread.report_on_exception` stays at its default of true. Each writes a heartbeat, and `GET /`
 reports an error when either goes stale.
 
+**Text is UTF-8, and mill says so rather than asking the locale.** Issue bodies, comments, specs,
+and everything a stage emits routinely contain emoji and accented characters. Ruby derives
+`Encoding.default_external` from the locale, and a process started by systemd usually has no locale
+at all — so US-ASCII is the *expected* condition on the server, not a test artifact. Measured
+2026-08-19: under US-ASCII the first non-ASCII byte in an issue body raised
+`Encoding::CompatibilityError` out of `JSON.parse` inside `Mill::Github`, and the same byte on a
+stage's stdout raised out of the stream parser and took the launch with it. mill pins the default at
+load *and* normalises at each seam, because a pipe's encoding is fixed when it is opened rather than
+when a string is built, and because an injected test runner never passes through the default one.
+A byte that is genuinely undecodable is dropped; the payload is never lost for it. One consequence
+for the log: it is capped by byte count, so the cut is realigned to a character boundary rather than
+leaving a half-written character in a file the UI tails and a replay re-parses.
+
 **Stack.** Ruby, Roda, Sequel, SQLite, Puma, Minitest, and Faraday for the OAuth exchange — stdlib
 for everything else. mill runs on macOS and Linux; the OS-specific facts it needs sit behind one
 platform module, listed in [Sleep and wake](#sleep-and-wake).

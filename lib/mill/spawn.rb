@@ -207,7 +207,10 @@ module Mill
 			if line.bytesize > room
 				# Keep what fits rather than discarding the line whole: one oversized
 				# tool result would otherwise throw away the entire log before it.
-				log.write(line.byteslice(0, room))
+				# scrub('') drops the partial character a byte offset leaves behind —
+				# the log is tailed by the UI and re-parsed on replay, so it has to
+				# stay valid UTF-8 even where it was cut.
+				log.write(line.byteslice(0, room).scrub(''))
 				log.write(TRUNCATED)
 				return CONTENT_CAP
 			end

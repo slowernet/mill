@@ -293,6 +293,21 @@ module Mill
 			File.write(full, body)
 		end
 
+		# A branch name or commit message can carry anything, and Open3 tags its
+		# output with whatever the locale says.
+		def test_non_ascii_output_survives_the_locale
+			subject = "spec: caf\u00E9 \u{1F6A2}"
+			git('switch', '-c', 'feature')
+			write('notes.md', "x\n")
+			git('add', '-A')
+			git('commit', '-m', subject)
+
+			log = Mill::Git.run!(@repo, 'log', '-1', '--pretty=%s')
+
+			assert_equal Encoding::UTF_8, log.encoding
+			assert_includes log, subject
+		end
+
 		def test_a_failing_command_is_reported_not_raised
 			result = Mill::Git.run(@repo, 'rev-parse', 'no-such-ref')
 
@@ -388,9 +403,17 @@ module Mill
 
 		def self.run(repo_path, *args)
 			out, err, status = Open3.capture3('git', '-C', repo_path.to_s, *args.map(&:to_s))
-			Result.new(out: out, err: err, ok: status.success?)
+			Result.new(out: utf8(out), err: utf8(err), ok: status.success?)
 		rescue SystemCallError => e
 			Result.new(out: '', err: e.message, ok: false)
+		end
+
+		# Same reason as Mill::Github#utf8: Open3 tags its output with
+		# Encoding.default_external, and a branch name, path, or commit message can
+		# carry anything. mill pins the default at load too; this is the seam.
+		def self.utf8(text)
+			text = text.dup.force_encoding(Encoding::UTF_8)
+			text.valid_encoding? ? text : text.scrub('')
 		end
 
 		def self.run!(repo_path, *args)
@@ -438,7 +461,7 @@ require_relative 'mill/git'
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_git.rb`
-Expected: PASS, 7 runs, 0 failures
+Expected: PASS, 8 runs, 0 failures
 
 - [ ] **Step 5: Run the full suite**
 
@@ -2407,7 +2430,7 @@ Add `require 'fileutils'` to the top of `lib/mill/git.rb`.
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_git.rb`
-Expected: PASS, 9 runs, 0 failures
+Expected: PASS, 10 runs, 0 failures
 
 - [ ] **Step 5: Add the rake task**
 

@@ -176,14 +176,26 @@ module Mill
 			json(*args)
 		end
 
-		def run(*args) = @runner.call(args)
+		# Every runner funnels through here, the injected ones in tests included, so
+		# this is where text mill did not write becomes text mill can parse.
+		def run(*args) = utf8(@runner.call(args).to_s)
 
 		# The one place mill shells out to gh.
 		def run_gh(args)
 			out, err, status = Open3.capture3('gh', *args)
 			return out if status.success?
 
-			raise_for(err, args)
+			raise_for(utf8(err), args)
+		end
+
+		# Open3 tags its output with Encoding.default_external, so on a host with no
+		# locale set an issue body containing an emoji arrives tagged US-ASCII and
+		# raises out of JSON.parse before anything gets a chance to handle it. The
+		# text is UTF-8 whatever the locale claims; a genuinely undecodable byte is
+		# dropped rather than losing the whole payload.
+		def utf8(text)
+			text = text.dup.force_encoding(Encoding::UTF_8)
+			text.valid_encoding? ? text : text.scrub('')
 		end
 
 		def raise_for(err, args)

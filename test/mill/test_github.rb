@@ -4,6 +4,9 @@ module Mill
 	# Fixture-backed: never reaches the network, never runs gh.
 	class TestGithub < Minitest::Test
 		FIXTURES = File.join(__dir__, '..', 'fixtures', 'gh')
+		# Built from escapes rather than literals so this file stays ASCII and the
+		# test cannot pass because an editor normalised something.
+		EMOJI = "Ship it \u{1F6A2} \u2014 caf\u00E9, \u65E5\u672C\u8A9E, \u{1F469}\u{1F3FD}\u200D\u{1F680}".freeze
 
 		def fixture(name) = File.read(File.join(FIXTURES, "#{name}.json"))
 
@@ -203,6 +206,39 @@ module Mill
 			assert Mill::Github.trusted_author?({ author_association: 'OWNER' })
 			refute Mill::Github.trusted_author?({ authorAssociation: 'NONE' })
 			refute Mill::Github.trusted_author?({ authorAssociation: nil })
+		end
+
+		# --- text mill did not write ------------------------------------------
+
+		# Open3 tags output with Encoding.default_external, which is US-ASCII on a
+		# host with no locale set -- the normal condition under systemd. An issue
+		# body with an emoji in it then raised straight out of JSON.parse.
+		def test_a_non_ascii_issue_body_survives_whatever_the_locale_says
+			body = { number: 42, title: 'Fix the bug', body: EMOJI }.to_json
+
+			[Encoding::UTF_8, Encoding::US_ASCII, Encoding::ASCII_8BIT].each do |tagged|
+				gh = Mill::Github.new(runner: ->(_args) { body.dup.force_encoding(tagged) })
+
+				assert_equal EMOJI, gh.issue('slowernet/mill-scratch', 42)[:body],
+					"gh output tagged #{tagged} did not survive"
+			end
+		end
+
+		def test_a_comment_with_emoji_is_still_read_as_an_answer
+			payload = [[{ id: 1, body: "Use 30 seconds #{EMOJI}", author_association: 'OWNER' }]].to_json
+			gh = Mill::Github.new(runner: ->(_args) { payload.dup.force_encoding(Encoding::US_ASCII) })
+			comment = gh.comments('slowernet/mill-scratch', 42).first
+
+			assert Mill::Github.trusted_author?(comment)
+			assert_includes comment[:body], EMOJI
+		end
+
+		# A truly malformed byte is not a reason to lose the whole payload.
+		def test_an_undecodable_byte_does_not_take_the_call_down
+			payload = %({"number":1,"body":"caf\xC3"}).dup.force_encoding(Encoding::ASCII_8BIT)
+			gh = Mill::Github.new(runner: ->(_args) { payload })
+
+			assert_equal 1, gh.issue('slowernet/mill-scratch', 1)[:number]
 		end
 
 		private
