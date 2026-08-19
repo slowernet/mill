@@ -2102,6 +2102,17 @@ so Plan 5 adds dispatch and touches none of it.
   server as much as the laptop
 - The settle window and sleep detection, and the `caffeinate` assertion — laptop only
 - The reaper: retention of finished runs, and deleting logs when a run row goes
+- **Rename `Mill::Clock` to `Mill::Platform`** if this plan adds `systemd-inhibit` to it. The
+  module already holds the process-table reads as well as the clocks, so the name understates it
+  by half, and this document has always described it as one platform module. A rename, not a
+  dependency: there is no general-purpose Darwin/Linux portability gem worth taking. Ruby's
+  `Process.clock_gettime` already abstracts the syscall, and the difference between the platforms
+  is which constant carries which meaning, which no library can hide without naming the semantics
+  — which is what `awake` and `continuous` do. `concurrent-ruby`'s `Concurrent.monotonic_time`
+  makes no such distinction and uses `CLOCK_MONOTONIC` on both, so on Darwin it returns the
+  sleep-*including* clock: taking it would have made every awake-time deadline count time asleep,
+  which is the bug this section exists to prevent. `sys-proctable` remains the only real candidate
+  for the process table and remains last released 2022-12-26, checked again 2026-08-19.
 
 *Demonstrable:* close the lid mid-stage and the run recovers instead of burning a strike.
 
