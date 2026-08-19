@@ -328,5 +328,113 @@ module Mill
 
 			assert_empty calls.select { |args| args.first == 'api' }
 		end
+
+		# --- dispatch ------------------------------------------------------------
+
+		def pending_event(repo_id, number, body: 'The second one.', node: 'IC_99')
+			db[:events].insert(repo_id: repo_id, kind: 'comment', gh_node_id: node,
+				payload_json: { body: body, subject_number: number, subject_kind: 'issue',
+					author_association: 'OWNER' }.to_json,
+				attempts: 0, state: 'pending', created_at: Mill.now)
+		end
+
+		def test_a_comment_on_a_blocked_run_resumes_it
+			repo_id = prepared_repo
+			run_id = create_run(repo_id: repo_id, subject_number: 1, status: 'blocked')
+			pending_event(repo_id, 1)
+			sup = FakeSupervisor.new
+			sweeping(sup: sup).dispatch
+
+			assert_equal [run_id], sup.started
+		end
+
+		def test_the_answer_reaches_the_run
+			repo_id = prepared_repo
+			run_id = create_run(repo_id: repo_id, subject_number: 1, status: 'blocked')
+			pending_event(repo_id, 1, body: 'Use the second spec.')
+			sup = FakeSupervisor.new
+			sweeping(sup: sup).dispatch
+
+			assert_equal ['Use the second spec.'], sup.answers[run_id]
+		end
+
+		def test_an_acted_event_is_marked_processed
+			repo_id = prepared_repo
+			create_run(repo_id: repo_id, subject_number: 1, status: 'blocked')
+			pending_event(repo_id, 1)
+			sweeping.dispatch
+			row = db[:events].where(gh_node_id: 'IC_99').first
+
+			assert_equal 'processed', row[:state]
+			refute_nil row[:processed_at]
+		end
+
+		# Only two of the five triggers have a route. The rest are recorded and
+		# logged rather than acted on or silently dropped.
+		def test_a_comment_with_no_route_is_recorded_and_left
+			repo_id = prepared_repo
+			create_run(repo_id: repo_id, subject_number: 1, status: 'running')
+			pending_event(repo_id, 1)
+			sup = FakeSupervisor.new
+			sweeping(sup: sup).dispatch
+
+			assert_empty sup.started
+			assert_equal 'no_route', db[:events].where(gh_node_id: 'IC_99').get(:state)
+		end
+
+		# A failed start must not swallow the answer: fail_event is the
+		# compensation for having marked it processed first.
+		def test_a_failed_start_leaves_the_answer_to_be_retried
+			repo_id = prepared_repo
+			create_run(repo_id: repo_id, subject_number: 1, status: 'blocked')
+			pending_event(repo_id, 1)
+			sup = FakeSupervisor.new
+			def sup.start(*) = raise(Mill::Error, 'nope')
+			sweeping(sup: sup).dispatch
+			row = db[:events].where(gh_node_id: 'IC_99').first
+
+			assert_equal 'pending', row[:state]
+			assert_nil row[:processed_at]
+		end
+
+		# One walker per run. A retried event must not become a second thread in
+		# the same worktree.
+		def test_a_run_already_walking_is_never_started_twice
+			repo_id = prepared_repo
+			run_id = create_run(repo_id: repo_id, subject_number: 1, status: 'blocked')
+			pending_event(repo_id, 1)
+			sup = FakeSupervisor.new
+			sup.define_singleton_method(:running?) { |id| id == run_id }
+			sweeping(sup: sup).dispatch
+
+			assert_empty sup.started
+		end
+
+		def test_an_event_that_keeps_raising_dies_rather_than_retrying_forever
+			repo_id = prepared_repo
+			create_run(repo_id: repo_id, subject_number: 1, status: 'blocked')
+			pending_event(repo_id, 1)
+			sup = FakeSupervisor.new
+			def sup.start(*) = raise(Mill::Error, 'nope')
+			p = sweeping(sup: sup)
+			(Mill::Poller::MAX_EVENT_ATTEMPTS + 1).times { p.dispatch }
+			row = db[:events].where(gh_node_id: 'IC_99').first
+
+			assert_equal 'dead', row[:state]
+			assert_match(/nope/, row[:last_error])
+		end
+
+		# A blocked run is not counted as running until its own thread says so, so
+		# ten answers at once would otherwise start ten route walks.
+		def test_the_cap_binds_on_resumes_too
+			repo_id = prepared_repo
+			create_run(repo_id: repo_id, subject_number: 1, status: 'blocked')
+			pending_event(repo_id, 1)
+			sup = FakeSupervisor.new(capped: true)
+			sweeping(sup: sup).dispatch
+
+			assert_empty sup.started
+			assert_equal 'pending', db[:events].where(gh_node_id: 'IC_99').get(:state)
+		end
 	end
 end

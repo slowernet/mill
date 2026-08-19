@@ -27,10 +27,13 @@ module Mill
 			@locator = locator
 		end
 
+		MAX_EVENT_ATTEMPTS = 3
+
 		def tick
 			@board.redrive
 			reconcile
 			sweep
+			dispatch
 		end
 
 		def reconcile
@@ -65,7 +68,77 @@ module Mill
 				.map { |repo_id, kind, number| { repo_id: repo_id, kind: kind, number: number } }
 		end
 
+		# Board Status decides what a comment is. While an item is Blocked, every
+		# comment on it is an answer and none of them starts a run — otherwise your
+		# answer tries to start a second run, the uniqueness index refuses it, the
+		# event retries until it dies, and the blocked run waits for an answer that
+		# already arrived.
+		#
+		# The cap binds here too: a blocked run is not counted as running until its
+		# own thread says so, so ten answers at once would start ten route walks.
+		def dispatch
+			@db[:events].where(kind: 'comment', state: 'pending').order(:id).each do |event|
+				break if @supervisor.at_cap?
+
+				handle(event)
+			end
+		end
+
 		private
+
+		# Marked processed, committed, and only then is the thread spawned — never
+		# inside the same transaction as it.
+		#
+		# A thread started inside an open transaction writes to the same SQLite
+		# file from another connection while this one holds the write lock, so
+		# either the thread or the commit fails. If the commit is what fails, the
+		# event rolls back to pending while the thread it already spawned keeps
+		# running, and the next dispatch starts a second walker on the same run.
+		#
+		# Marking first would drop the answer if `start` then failed, which is what
+		# the design's same-transaction rule exists to prevent. fail_event is the
+		# compensation: it puts the event back to pending, so a failed start is
+		# retried rather than lost. `running?` is what stops a retry becoming a
+		# second walker.
+		def handle(event)
+			payload = JSON.parse(event[:payload_json].to_s, symbolize_names: true)
+			run = blocked_run_for(event[:repo_id], payload)
+
+			return no_route(event) if run.nil?
+			return if @supervisor.running?(run[:id])
+
+			finish_event(event, 'processed')
+			@supervisor.start(run[:id], answers: [payload[:body].to_s])
+		rescue StandardError => e
+			fail_event(event, e)
+		end
+
+		def blocked_run_for(repo_id, payload)
+			@db[:runs].where(repo_id: repo_id, subject_kind: payload[:subject_kind].to_s,
+				subject_number: payload[:subject_number], status: 'blocked').first
+		end
+
+		# Only two of the five triggers have a route: the `mill:` marker, review
+		# comments and red checks all need the iterate route, which does not exist.
+		# Recorded and logged rather than dropped, so Plan 5 can see what it missed.
+		def no_route(event)
+			warn "no route for comment event #{event[:gh_node_id]}"
+			finish_event(event, 'no_route')
+		end
+
+		def finish_event(event, state)
+			@db[:events].where(id: event[:id]).update(state: state, processed_at: Mill.now)
+		end
+
+		def fail_event(event, error)
+			attempts = event[:attempts].to_i + 1
+			dead = attempts >= MAX_EVENT_ATTEMPTS
+			@db[:events].where(id: event[:id]).update(
+				attempts: attempts, state: dead ? 'dead' : 'pending',
+				last_error: "#{error.class}: #{error.message}"[0, 300],
+				processed_at: dead ? Mill.now : nil
+			)
+		end
 
 		def fetch(repo, subject)
 			slug = "#{repo[:owner]}/#{repo[:name]}"
