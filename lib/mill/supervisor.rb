@@ -114,7 +114,82 @@ module Mill
 			warn "run #{run_id} worktree not removed: #{e.message}"
 		end
 
+		# Every run marked running, checked against the live process table. Called
+		# at boot and on a timer. At boot mill has no live threads, so every group
+		# it finds is foreign by definition — which is the right answer: mill
+		# restarted and the stage outlived it.
+		#
+		# Interrupting is only half the job. A run interrupted and not restarted
+		# stays running with no thread forever, holds its slot against the cap, and
+		# is skipped by the poller because its item has an active run. Two of those
+		# stop the factory with nothing anywhere reporting a problem.
+		def reap
+			@db[:runs].where(status: 'running').select_map(:id).filter_map do |run_id|
+				row = @db[:runs].where(id: run_id).first
+				next if row.nil? || row[:status] != 'running'
+
+				case identify(row)
+				when :ours then next
+				when :foreign
+					Mill::Spawn.reap(row[:pgid], boot_at: row[:host_boot_at],
+						started_at: row[:pid_started_at])
+				end
+
+				interrupt(row)
+				restart(run_id)
+				run_id
+			end
+		end
+
+		# Three branches, in this order. Nothing is signalled on the strength of
+		# the boot time alone: kern.boottime moves when NTP corrects the clock,
+		# which it does routinely on waking, so the live process settles it.
+		#
+		# `:ours` means a thread is walking this run right now, not merely that no
+		# process is recorded. pid and pgid are nil for the whole gap between two
+		# stages, five times over on the plan route, so reading nil as "in hand"
+		# strands any run mill was restarted during.
+		def identify(row)
+			return :ours if running?(row[:id])
+			return :gone if row[:pid].nil? || row[:pid_started_at].nil?
+
+			started = Mill::Clock.pid_started_at(row[:pid])
+			return :gone if started.nil?
+			return :gone if (started - row[:pid_started_at]).abs > 2
+
+			@own_pgids.include?(row[:pgid]) ? :ours : :foreign
+		end
+
 		private
+
+		# Re-enters the stage the run was in. Costs an attempt and no strike: the
+		# machine lost the process, the stage did not fail. A run interrupt has
+		# just blocked, because it hit the interruption cap, is waiting for a
+		# person, and the next tick would otherwise start it again.
+		def restart(run_id)
+			return if at_cap?
+			return unless @db[:runs].where(id: run_id).get(:status) == 'running'
+
+			start(run_id)
+		end
+
+		def interrupt(row)
+			stage = row[:current_stage] or
+				raise Mill::Error, "run #{row[:id]} is running with no current_stage"
+
+			ledger = Mill::Ledger.new(@db, row[:id])
+			ledger.charge(stage: stage, outcome: :interrupted)
+			@db[:runs].where(id: row[:id]).update(pid: nil, pgid: nil, heartbeat_at: nil)
+			return unless ledger.out_of_interruptions?(stage)
+
+			@db[:runs].where(id: row[:id]).update(status: 'blocked')
+			comment(@db[:repos].where(id: row[:repo_id]).first, row[:subject_number],
+				"Blocked at `#{stage}`: this stage has been interrupted " \
+				"#{Mill::Ledger::MAX_INTERRUPTIONS} times without finishing. Nothing was charged " \
+				'against it — each interruption was mill losing the process, not the stage ' \
+				'failing. Reply here to try again.')
+			@board&.want(row[:id], 'blocked')
+		end
 
 		def walk(run_id, answers: [])
 			run = Mill::Run.adopt(run_id, answers: answers, db: @db)

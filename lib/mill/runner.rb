@@ -71,6 +71,10 @@ module Mill
 			return halt(:blocked, "#{@stage} has used both its strikes") if tally.out_of_strikes?
 			return halt(:blocked, "#{@stage} hit its number cap") if tally.out_of_attempts?
 
+			# Recorded before the launch, not after it. This is what the supervisor
+			# reads to know which stage to charge for an interruption, and an
+			# interruption is by definition something that happens mid-launch.
+			@db[:runs].where(id: @run_id).update(current_stage: @stage)
 			settle(launch(@stage, tally.next_attempt), tally.next_attempt)
 		end
 

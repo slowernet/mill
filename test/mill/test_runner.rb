@@ -55,8 +55,10 @@ module Mill
 		def runner_for(script, route: 'plan', github: FakeGithub.new)
 			@calls = []
 			@github = github
-			run_id = create_run(repo_id: create_repo(local_path: '/tmp/clone', base_branch: 'main'),
-				route: route, branch: 'a-branch')
+			run_id = @run_id = create_run(
+				repo_id: create_repo(local_path: '/tmp/clone', base_branch: 'main'),
+				route: route, branch: 'a-branch'
+			)
 			queue = script.dup
 			launcher = lambda do |stage:, prompt:, number:, session_id:|
 				@calls << { stage: stage, number: number, session_id: session_id, prompt: prompt }
@@ -72,6 +74,30 @@ module Mill
 		end
 
 		def clean_run = Array.new(6) { ->(stage) { ok_for(stage) } }
+
+		# --- what a live run is doing ---------------------------------------
+
+		# The column is what a supervisor reaping a live run reads to know which
+		# stage to charge. Written only at halt, it is nil for the whole time a
+		# stage is actually running, and the reaper then silently charges nothing.
+		def test_the_current_stage_is_recorded_while_the_stage_is_running
+			seen = []
+			runner = runner_for(Array.new(6) do |i|
+				lambda do |stage|
+					seen << [stage, db[:runs].where(id: @run_id).get(:current_stage)]
+					ok_for(stage)
+				end
+			end)
+			runner.call
+
+			assert_equal seen.map(&:first), seen.map(&:last)
+		end
+
+		def test_a_finished_run_is_in_no_stage
+			runner_for(clean_run).call
+
+			assert_nil db[:runs].where(id: @run_id).get(:current_stage)
+		end
 
 		# --- the happy path -------------------------------------------------
 

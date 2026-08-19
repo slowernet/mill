@@ -299,5 +299,160 @@ module Mill
 			assert_equal 'failed', db[:runs].where(id: run_id).get(:status)
 			refute sup.running?(run_id)
 		end
+
+		# --- reaping -------------------------------------------------------------
+
+		def running_run(sup, pid:, started_at:, boot_at: Mill::Clock.boot_time)
+			run_id = claim(sup)
+			db[:runs].where(id: run_id).update(pid: pid, pgid: pid, pid_started_at: started_at,
+				host_boot_at: boot_at, current_stage: 'plan', heartbeat_at: Mill.now)
+			run_id
+		end
+
+		# Records what it was asked to restart instead of walking a real route.
+		def watching_restarts(sup)
+			started = []
+			sup.define_singleton_method(:start) { |id, **| started << id }
+			started
+		end
+
+		# No process, so whether the machine rebooted or the process simply died,
+		# the attempt is over. Signal nothing.
+		def test_a_run_whose_process_is_gone_is_interrupted
+			sup = supervisor
+			watching_restarts(sup)
+			run_id = running_run(sup, pid: 999_999, started_at: Mill.now)
+
+			assert_equal [run_id], sup.reap
+			assert_equal 'interrupted', db[:stage_attempts].where(run_id: run_id).first[:status]
+		end
+
+		# The machine lost the process; the stage did not fail.
+		def test_an_interruption_charges_no_strike
+			sup = supervisor
+			watching_restarts(sup)
+			run_id = running_run(sup, pid: 999_999, started_at: Mill.now)
+			sup.reap
+
+			refute db[:stage_attempts].where(run_id: run_id).first[:strike_charged]
+		end
+
+		def test_an_interruption_clears_the_stale_identity
+			sup = supervisor
+			watching_restarts(sup)
+			run_id = running_run(sup, pid: 999_999, started_at: Mill.now)
+			sup.reap
+			row = db[:runs].where(id: run_id).first
+
+			assert_nil row[:pid]
+			assert_nil row[:pgid]
+		end
+
+		# A pid that exists but started at a different time is a stranger wearing a
+		# recycled number. Signalling it would kill something else entirely.
+		def test_a_recycled_pid_is_never_signalled
+			sup = supervisor
+			watching_restarts(sup)
+			run_id = running_run(sup, pid: Process.pid, started_at: 1)
+
+			assert_equal :gone, sup.identify(db[:runs].where(id: run_id).first)
+		end
+
+		# mill restarted and the stage kept running. Two agents in one worktree is
+		# worse than losing partial work.
+		def test_a_live_group_mill_did_not_spawn_is_foreign
+			sup = supervisor
+			run_id = running_run(sup, pid: Process.pid,
+				started_at: Mill::Clock.pid_started_at(Process.pid))
+
+			assert_equal :foreign, sup.identify(db[:runs].where(id: run_id).first)
+		end
+
+		# :ours means a thread is walking this run right now — not merely that no
+		# process is recorded. pid and pgid are nil for the whole gap between two
+		# stages, which happens five times on the plan route, so reading nil as
+		# "mill has this in hand" strands every run mill was restarted during.
+		def test_a_running_run_with_no_thread_and_no_process_is_gone
+			sup = supervisor
+			run_id = claim(sup)
+			db[:runs].where(id: run_id).update(current_stage: 'plan')
+
+			assert_equal :gone, sup.identify(db[:runs].where(id: run_id).first)
+		end
+
+		def test_a_run_with_a_live_thread_is_left_alone
+			sup = supervisor
+			run_id = claim(sup)
+			gate = Queue.new
+			thread = sup.start(run_id, walker: ->(_id) { gate.pop; state(:done) })
+
+			assert_equal :ours, sup.identify(db[:runs].where(id: run_id).first)
+			assert_empty sup.reap
+
+			gate << :go
+			thread.join
+		end
+
+		# Interrupting without re-entering leaves the run marked running with no
+		# thread, which nothing else ever picks up.
+		def test_an_interrupted_run_is_started_again
+			sup = supervisor
+			started = watching_restarts(sup)
+			run_id = running_run(sup, pid: 999_999, started_at: Mill.now)
+			sup.reap
+
+			assert_equal [run_id], started
+		end
+
+		# A run blocked by the interruption cap is waiting for a person. Starting
+		# it again would burn its attempts with nobody answering.
+		def test_a_run_blocked_by_the_cap_is_not_started_again
+			sup = supervisor
+			started = watching_restarts(sup)
+			run_id = running_run(sup, pid: 999_999, started_at: Mill.now)
+			Mill::Ledger::MAX_INTERRUPTIONS.times do
+				db[:runs].where(id: run_id).update(status: 'running', pid: 999_999, pgid: 999_999,
+					pid_started_at: Mill.now, host_boot_at: Mill::Clock.boot_time)
+				sup.reap
+			end
+
+			assert_equal 'blocked', db[:runs].where(id: run_id).get(:status)
+			assert_equal Mill::Ledger::MAX_INTERRUPTIONS - 1, started.length
+		end
+
+		def test_hitting_the_interruption_cap_says_it_charged_nothing
+			calls = []
+			sup = supervisor(comments: calls)
+			watching_restarts(sup)
+			run_id = running_run(sup, pid: 999_999, started_at: Mill.now)
+			Mill::Ledger::MAX_INTERRUPTIONS.times do
+				db[:runs].where(id: run_id).update(status: 'running', pid: 999_999, pgid: 999_999,
+					pid_started_at: Mill.now, host_boot_at: Mill::Clock.boot_time)
+				sup.reap
+			end
+
+			assert_match(/interrupted/, bodies(calls).last)
+		end
+
+		# A running row with no current_stage means something above lost track of
+		# what the run was doing. Charging nothing and moving on hides it.
+		def test_a_running_run_with_no_stage_is_an_error_rather_than_a_no_op
+			sup = supervisor
+			watching_restarts(sup)
+			run_id = running_run(sup, pid: 999_999, started_at: Mill.now)
+			db[:runs].where(id: run_id).update(current_stage: nil)
+
+			assert_raises(Mill::Error) { sup.reap }
+		end
+
+		def test_a_finished_run_is_not_reaped
+			sup = supervisor
+			started = watching_restarts(sup)
+			run_id = running_run(sup, pid: 999_999, started_at: Mill.now)
+			db[:runs].where(id: run_id).update(status: 'done')
+
+			assert_empty sup.reap
+			assert_empty started
+		end
 	end
 end
