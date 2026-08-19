@@ -326,6 +326,38 @@ module Mill
 			r
 		end
 
+		# An answered run is working again. Left blocked it lies three ways: the
+		# board keeps saying Blocked, the run does not bind against the cap, and
+		# reap queries running rows only — so a stage that died could never be
+		# recovered.
+		def test_an_answered_run_is_running_again
+			sup = supervisor
+			run_id = claim(sup)
+			db[:runs].where(id: run_id).update(status: 'blocked')
+			gate = Queue.new
+			thread = sup.start(run_id, answers: ['the second one'],
+				walker: ->(_id) { gate.pop; state(:done) })
+
+			assert_equal 'running', db[:runs].where(id: run_id).get(:status)
+			assert_equal 1, db[:runs].where(status: 'running').count
+
+			gate << :go
+			thread.join
+		end
+
+		def test_a_resumed_run_is_visible_to_the_reaper
+			sup = supervisor
+			run_id = claim(sup)
+			db[:runs].where(id: run_id).update(status: 'blocked')
+			gate = Queue.new
+			thread = sup.start(run_id, answers: ['x'], walker: ->(_id) { gate.pop; state(:done) })
+
+			assert_includes db[:runs].where(status: 'running').select_map(:id), run_id
+
+			gate << :go
+			thread.join
+		end
+
 		def test_a_run_thread_is_tracked_while_it_walks
 			sup = supervisor
 			run_id = claim(sup)

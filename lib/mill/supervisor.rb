@@ -73,6 +73,7 @@ module Mill
 		# One thread per run: a route walk takes tens of minutes, and a supervisor
 		# that walked it would claim one item and then stop reconciling.
 		def start(run_id, walker: nil, answers: [])
+			resumed(run_id)
 			walk = walker || ->(id) { walk(id, answers: answers) }
 			@threads[run_id] = Thread.new do
 				finish(run_id, walk.call(run_id))
@@ -166,6 +167,19 @@ module Mill
 		# machine lost the process, the stage did not fail. A run interrupt has
 		# just blocked, because it hit the interruption cap, is waiting for a
 		# person, and the next tick would otherwise start it again.
+		# A run that has been answered is working again, and nothing else says so.
+		# Left blocked it lies in three ways at once: the board keeps saying Blocked
+		# for the whole rest of the route, the run does not count against the
+		# concurrency cap, and `reap` queries running rows only — so if its stage
+		# died, nothing could ever recover it.
+		def resumed(run_id)
+			row = @db[:runs].where(id: run_id).first
+			return unless row && row[:status] == 'blocked'
+
+			@db[:runs].where(id: run_id).update(status: 'running')
+			@board&.want(run_id, 'running')
+		end
+
 		def restart(run_id)
 			return if at_cap?
 			return unless @db[:runs].where(id: run_id).get(:status) == 'running'
