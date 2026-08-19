@@ -17,6 +17,40 @@ module Mill
 			['ruby', '-e', "print File.read(#{File.join(FIXTURES, "#{fixture}.jsonl").inspect})"]
 		end
 
+		# The caller has to be able to record the identity before the process ends,
+		# because the whole point of recording it is reaping something still alive.
+		def test_reports_its_identity_as_soon_as_the_process_starts
+			with_log do |log, dir|
+				seen = nil
+				spawn_in(log, dir, on_spawn: ->(*args) { seen = args })
+					.run(['ruby', '-e', 'sleep 0.1'])
+
+				refute_nil seen, 'on_spawn was never called'
+				pid, pgid, started_at, boot_at = seen
+
+				assert_operator pid, :>, 1
+				assert_equal pid, pgid
+				refute_nil started_at
+				refute_nil boot_at
+			end
+		end
+
+		# A callback that raises must not leave a spawned process group with nobody
+		# holding its identity. The launch fails; the group does not survive it.
+		def test_a_failing_callback_does_not_orphan_the_process_group
+			with_log do |log, dir|
+				pgid = nil
+				spawn = spawn_in(log, dir, on_spawn: lambda { |_pid, group, *|
+					pgid = group
+					raise Mill::Error, 'database is locked'
+				})
+
+				assert_raises(Mill::Error) { spawn.run(['ruby', '-e', 'sleep 30']) }
+				refute_nil pgid
+				assert_raises(Errno::ESRCH) { Process.kill(0, -pgid) }
+			end
+		end
+
 		def test_tees_the_stream_and_parses_it_at_once
 			with_log do |log, dir|
 				result = spawn_in(log, dir).run(fake_stage('plan_ok'))

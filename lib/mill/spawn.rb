@@ -30,10 +30,11 @@ module Mill
 
 		attr_reader :pid, :pgid, :pid_started_at, :host_boot_at
 
-		def initialize(log_path:, chdir:, secrets: [], clock: -> { Mill::Clock.awake })
+		def initialize(log_path:, chdir:, secrets: [], on_spawn: nil, clock: -> { Mill::Clock.awake })
 			@log_path = log_path
 			@chdir = chdir
 			@secrets = expand_secrets(secrets)
+			@on_spawn = on_spawn
 			@clock = clock
 		end
 
@@ -150,6 +151,11 @@ module Mill
 				# pgid and would otherwise reach kill! with no identity to check.
 				@pid_started_at = Mill::Clock.pid_started_at(@pid)
 				@pgid = safe_pgid(@pid)
+				# Reported before the first line is read: a caller that waits for the
+				# result cannot reap a process that is still running. If recording it
+				# fails — a locked database is the likely way — the group must not
+				# outlive the failure, because nothing else now knows its identity.
+				announce_spawn
 				drain = drain_stderr(stderr)
 
 				stdout.each_line do |raw|
@@ -168,6 +174,18 @@ module Mill
 			Process.getpgid(pid)
 		rescue Errno::ESRCH
 			nil
+		end
+
+		# The callback is how a live process becomes findable by anything other than
+		# this object. A failure here leaves a running process group that nothing
+		# has recorded, so it is killed before the exception is allowed out.
+		def announce_spawn
+			return if @on_spawn.nil?
+
+			@on_spawn.call(@pid, @pgid, @pid_started_at, @host_boot_at)
+		rescue StandardError
+			self.class.reap(@pgid, boot_at: @host_boot_at, started_at: @pid_started_at)
+			raise
 		end
 
 		# Secrets are injected into the stage environment and must never reach the

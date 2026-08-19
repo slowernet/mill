@@ -32,6 +32,32 @@ module Mill
 		Time.now.utc.to_i
 	end
 
+	# Settings are parsed, never coerced. `'lots'.to_i` is 0, and a concurrency cap
+	# of 0 makes mill think it is always at capacity: it claims nothing, forever,
+	# with every check still green. A rejected value falls back and says so, so the
+	# mistake shows up in the log rather than in the absence of work.
+	def self.setting_int(name, default:, min:, max:)
+		setting(name, default: default, min: min, max: max) { |raw| Integer(raw, 10) }
+	end
+
+	def self.setting_float(name, default:, min:, max:)
+		setting(name, default: default.to_f, min: min, max: max) { |raw| Float(raw) }
+	end
+
+	def self.setting(name, default:, min:, max:)
+		raw = ENV[name]
+		return default if raw.nil? || raw.strip.empty?
+
+		value = yield(raw.strip)
+		return value if value >= min && value <= max
+
+		warn "#{name}=#{raw} is outside #{min}..#{max}; using #{default}"
+		default
+	rescue ArgumentError, TypeError
+		warn "#{name}=#{raw} is not a number; using #{default}"
+		default
+	end
+
 	# Text mill did not write — gh output, git output, a stage's stdout — is UTF-8
 	# whatever the locale claims. A byte that is genuinely undecodable is dropped
 	# rather than losing the payload it sits in.

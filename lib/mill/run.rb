@@ -9,6 +9,11 @@ module Mill
 	class Run
 		attr_reader :run_id, :worktree, :branch, :spec_path, :problem, :questions
 
+		# The supervisor sets this to learn which process groups are its own. Set
+		# per Run rather than globally: a second supervisor believing no group is
+		# mill's would classify every healthy stage as foreign and kill it.
+		attr_accessor :on_identity
+
 		def initialize(repo:, number:, clone:, db: Mill.db, github: nil, git: Mill::Git,
 			claude: Mill::Claude)
 			@owner, @name = repo.split('/', 2)
@@ -146,9 +151,26 @@ module Mill
 				announce&.call(stage, number, !session_id.nil?)
 				log = File.join(Mill.home, 'logs', @run_id.to_s,
 					"#{Mill::Stages.slug(stage)}-#{number}.jsonl")
-				@claude.new(stage).run(prompt, number: number, worktree: @worktree,
-					log_path: log, session_id: session_id, env: Mill::Rules.env_for(stage))
+				attempt = @claude.new(stage).run(prompt, number: number, worktree: @worktree,
+					log_path: log, session_id: session_id, env: Mill::Rules.env_for(stage),
+					on_spawn: method(:record_identity))
+				forget_identity
+				attempt
 			end
+		end
+
+		# What the supervisor reaps against, recorded the moment the group exists.
+		# A run between stages holds no identity, which is a different state from a
+		# run whose process mill has lost — the supervisor distinguishes them by
+		# whether it has a thread walking the run, not by these columns.
+		def record_identity(pid, pgid, started_at, boot_at)
+			@db[:runs].where(id: @run_id).update(pid: pid, pgid: pgid, pid_started_at: started_at,
+				host_boot_at: boot_at, heartbeat_at: Mill.now)
+			@on_identity&.call(pgid)
+		end
+
+		def forget_identity
+			@db[:runs].where(id: @run_id).update(pid: nil, pgid: nil, heartbeat_at: Mill.now)
 		end
 	end
 end
