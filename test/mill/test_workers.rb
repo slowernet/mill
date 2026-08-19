@@ -114,5 +114,22 @@ module Mill
 		def test_loading_the_app_starts_nothing
 			refute App.workers.health[:poller][:alive]
 		end
+
+		# Built without a board, every `@board&.want` in claim, finish and interrupt
+		# is a silent no-op: mill runs perfectly and never writes a Status, so the
+		# board sits on Ready while a run works, finishes and opens a pull request.
+		def test_the_shared_supervisor_can_write_to_the_board
+			refute_nil workers.supervisor.instance_variable_get(:@board)
+		end
+
+		# One supervisor per process. It alone knows which process groups mill
+		# spawned and which runs have a live thread.
+		def test_the_poller_and_the_reaper_share_one_supervisor
+			w = Mill::Workers.new
+			poller = w.send(:poller_tick)
+
+			assert_same w.supervisor, poller.binding.local_variable_get(:poller)
+				.instance_variable_get(:@supervisor)
+		end
 	end
 end

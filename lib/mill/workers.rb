@@ -8,14 +8,25 @@ module Mill
 		DEFAULT_INTERVAL = 30
 		MAX_BACKOFF = 300
 
+		attr_reader :supervisor, :board
+
 		def initialize(poller: nil, supervisor: nil, interval: nil, db: Mill.db)
 			@db = db
-			# One supervisor, shared. It is the only object holding which process
-			# groups mill spawned and which runs have a live thread; a second
-			# instance answers "none" to both and reaps healthy stages.
-			@shared = Mill::Supervisor.new(db: db)
-			@poller = poller
-			@supervisor = supervisor
+			# One board and one supervisor, both shared.
+			#
+			# The supervisor is the only object holding which process groups mill
+			# spawned and which runs have a live thread; a second instance answers
+			# "none" to both and reaps healthy stages.
+			#
+			# The board has to be handed to the supervisor as well as the poller.
+			# Built without one, every `@board&.want` in claim, finish and interrupt
+			# is a silent no-op — mill runs perfectly and never writes a Status, so
+			# the board sits on Ready while a run works, finishes and opens a pull
+			# request. Measured on the first real poll, 2026-08-19.
+			@board = Mill::Board.new(db: db)
+			@supervisor = Mill::Supervisor.new(db: db, board: @board)
+			@poller_tick = poller
+			@supervisor_tick = supervisor
 			# Not `.to_f`: an empty or unparseable MILL_POLL_SECONDS would become 0.0
 			# and turn the tick into a loop hammering the API as fast as it answers.
 			@interval = interval ||
@@ -61,13 +72,13 @@ module Mill
 		private
 
 		def poller_tick
-			@poller || begin
-				poller = Mill::Poller.new(db: @db, supervisor: @shared)
+			@poller_tick || begin
+				poller = Mill::Poller.new(db: @db, supervisor: @supervisor, board: @board)
 				-> { poller.tick }
 			end
 		end
 
-		def supervisor_tick = @supervisor || -> { @shared.reap }
+		def supervisor_tick = @supervisor_tick || -> { @supervisor.reap }
 
 		def loop_thread(name, work)
 			Thread.new do

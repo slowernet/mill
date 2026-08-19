@@ -163,10 +163,27 @@ module Mill
 			end
 		end
 
+		# Tables alone are not enough. A database several migrations behind has
+		# every table and is still missing columns mill writes — and it fails at the
+		# moment a run is claimed, deep inside a worker thread, rather than here.
+		# Measured 2026-08-19: the first real poll against a stale database raised
+		# `table runs has no column named board_item_id` on every tick, and doctor
+		# had reported the schema green.
 		def check_schema
 			db = Mill.db
 			missing = %i[repos runs stage_attempts ci_fixes events] - db.tables
-			missing.empty? ? pass('schema') : fail('schema', "missing tables: #{missing.join(', ')}")
+			return fail('schema', "missing tables: #{missing.join(', ')}") if missing.any?
+
+			latest = Dir[File.join(Mill::DB::MIGRATIONS, '*.rb')]
+				.map { |path| File.basename(path).to_i }.max
+			applied = db[:schema_info].get(:version).to_i
+
+			if applied >= latest
+				pass('schema', "migration #{applied}")
+			else
+				fail('schema', "database is at migration #{applied}, code expects #{latest} — " \
+					'run `bundle exec rake mill:migrate`')
+			end
 		rescue StandardError => e
 			fail('schema', e.message)
 		end
