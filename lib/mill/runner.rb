@@ -116,8 +116,20 @@ module Mill
 				plan_path: @artifacts['plan'],
 				verdicts: @verdicts,
 				objections: @objections[stage],
-				route: route
+				route: route,
+				spend: (spend_lines if stage == 'pr')
 			).compact
+		end
+
+		# The pr stage is told to put the per-stage cost in the body. On the first
+		# real run it was told nothing, and correctly said so rather than inventing
+		# numbers — but the body was then missing a section the design requires.
+		def spend_lines
+			@ledger.spend.map do |stage, t|
+				out = t[:tokens_out].nil? ? 'unmeasured' : t[:tokens_out]
+				"#{stage}: #{t[:attempts]} attempt(s), in #{t[:tokens_in]}, out #{out}, " \
+					"cache read #{t[:cache_read_tokens]}, cache write #{t[:cache_creation_tokens]}"
+			end
 		end
 
 		def reviewer?(stage) = stage.start_with?('review:')

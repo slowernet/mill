@@ -12,6 +12,10 @@ Open the pull request.
 
 {{objections|None.}}
 
+## What this run cost, per stage
+
+{{spend|mill recorded no per-stage totals for this run. Say so in the body rather than estimating.}}
+
 Load `mill:pr` and follow it:
 
 1. **Run the full test suite first.** `{{test_command|bundle exec rake test}}`. If anything fails,

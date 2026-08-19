@@ -842,9 +842,20 @@ mill denies `.github/workflows/**` because when a stage pushes a branch that mod
 workflow, GitHub runs the modified workflow with repository secrets in scope. If a stage
 legitimately needs to change CI, it blocks and asks.
 
-**2. The Bash sandbox, enabled.** `sandbox.enabled` with `filesystem.denyRead` on `~` and
-`allowRead` on the worktree. Defence in depth, not the boundary: it covers Bash and not the
-file tools, and fails open if it cannot start.
+**2. The Bash sandbox, enabled — and it turns out to control egress.** `sandbox.enabled` covers
+Bash and not the file tools, and fails open if it cannot start, so it is defence in depth rather
+than the boundary. But it denies outbound network by default and takes
+`sandbox.network.allowedDomains`, which is a proxy rather than advice: measured 2026-08-19, with
+`github.com` and `api.github.com` allowed, `api.github.com` answered 200 and `example.com` came
+back `X-Proxy-Error: blocked-by-allowlist`.
+
+So egress is per stage. The two that open or push a pull request reach those two hosts; **the other
+seven reach nothing at all.** That is stronger than this document originally accepted, and it was
+found the way most things here were — the `pr` stage hit the wall on the first real end-to-end run
+and asked rather than guessing.
+
+`mill:doctor` compares each ruleset's allowlist against the one mill writes, so widening a stage's
+reach is a change someone has to make deliberately and in the open.
 
 **3. A scoped GitHub token.** mill sets `GH_TOKEN` for each stage to a fine-grained PAT
 covering only selected repositories, with Contents and Pull requests read/write and nothing
@@ -866,7 +877,14 @@ bypasses its author imagined. Layers 1–3 are the boundary.
 
 **Accepted risks:**
 
-- **Network access inside a stage is unrestricted.**
+- **Network access is allowlisted per stage, and the allowlist is the risk.** Seven stages reach
+  nothing. `pr` and `push` reach `github.com` and `api.github.com`, which is exactly enough to
+  push a branch and open a pull request — and also enough to exfiltrate a worktree to a gist, so
+  the narrow token in layer 3 is what bounds the damage rather than the allowlist.
+- **A repo whose test suite needs the network will fail at `implement`**, because no package
+  registry is allowed. mill-scratch does not, since its gems resolve from the surrounding bundle.
+  The fix when it happens is a per-repo allowlist in `.mill.yml` rather than opening egress for
+  every stage — not yet built, and named here so the first person to hit it knows it was foreseen.
 - **Layer 1 is only as good as its rules**, and `implement` legitimately needs a wide one.
 - **mill is not safe against a hostile repository.**
 

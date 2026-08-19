@@ -4,9 +4,10 @@ require 'fileutils'
 
 module Mill
 	class TestDoctor < Minitest::Test
-		# The canonical ruleset, so the test and the runbook cannot drift from what
-		# doctor demands. Rules::write! produces exactly this.
-		GOOD = Mill::Rules.for_stage('implement').freeze
+		# The canonical ruleset, per stage, so the test and the runbook cannot drift
+		# from what doctor demands. Rules::write! produces exactly this — and it is
+		# per stage because pr and push are the only two with any network reach.
+		def good_for(stage) = Mill::Rules.for_stage(stage)
 
 		def with_home(rulesets: :all)
 			Dir.mktmpdir do |home|
@@ -28,7 +29,7 @@ module Mill
 			return if rulesets == :none
 
 			Mill::Stages.names.each do |stage|
-				body = rulesets.is_a?(Hash) ? (rulesets[stage] || GOOD) : GOOD
+				body = rulesets.is_a?(Hash) ? (rulesets[stage] || good_for(stage)) : good_for(stage)
 				File.write(File.join(home, 'settings', "#{Mill::Stages.slug(stage)}.json"), body.to_json)
 			end
 		end
@@ -140,7 +141,8 @@ module Mill
 		# Write(...) rule is accepted and enforces nothing. Measured: a workflow
 		# file was modified under exactly that rule.
 		def test_write_form_deny_rules_are_rejected
-			bad = { permissions: { deny: Mill::Rules.deny + ['Write(.github/workflows/**)'] } }
+			bad = Mill::Rules.for_stage('implement').merge(
+				permissions: { deny: Mill::Rules.deny + ['Write(.github/workflows/**)'] })
 
 			with_home(rulesets: { 'implement' => bad }) do |home|
 				failed = check(home, 'ruleset for implement')
@@ -153,7 +155,7 @@ module Mill
 		# A non-empty denylist is not the test. A ruleset can carry one irrelevant
 		# rule and satisfy every count while protecting nothing that matters.
 		def test_a_ruleset_missing_a_mandated_rule_is_rejected
-			thin = { permissions: { deny: ['Bash(sl:*)'] } }
+			thin = Mill::Rules.for_stage('implement').merge(permissions: { deny: ['Bash(sl:*)'] })
 
 			with_home(rulesets: { 'implement' => thin }) do |home|
 				failed = check(home, 'ruleset for implement')
@@ -171,6 +173,42 @@ module Mill
 				File.write(File.join(home, 'settings', 'pr.json'), '[]')
 
 				assert_match(/must be a JSON object/, check(home, 'ruleset for pr').detail)
+			end
+		end
+
+		# The sandbox's domain allowlist is a proxy and does confine, unlike the
+		# permissions allow list. Widening it is a real change in reach.
+		def test_egress_beyond_what_mill_writes_is_rejected
+			bad = Mill::Rules.for_stage('implement')
+			bad[:sandbox][:network][:allowedDomains] = ['rubygems.org']
+
+			with_home(rulesets: { 'implement' => bad }) do |home|
+				failed = check(home, 'ruleset for implement')
+
+				refute failed.ok
+				assert_match(/network egress differs/, failed.detail)
+			end
+		end
+
+		# Only the two stages that open or push a pull request reach anything.
+		def test_only_pr_and_push_are_given_egress
+			Mill::Stages.names.each do |stage|
+				allowed = Mill::Rules.for_stage(stage).dig(:sandbox, :network, :allowedDomains)
+
+				if %w[pr push].include?(stage)
+					assert_equal %w[github.com api.github.com], allowed, "#{stage} must reach GitHub"
+				else
+					assert_empty allowed, "#{stage} has no business on the network"
+				end
+			end
+		end
+
+		def test_a_ruleset_with_the_sandbox_off_is_rejected
+			bad = Mill::Rules.for_stage('implement')
+			bad[:sandbox][:enabled] = false
+
+			with_home(rulesets: { 'implement' => bad }) do |home|
+				refute check(home, 'ruleset for implement').ok
 			end
 		end
 
@@ -198,7 +236,8 @@ module Mill
 		# Absolute deny rules are accepted without complaint and enforce nothing,
 		# so one naming ~/.ssh looks like protection while providing none.
 		def test_absolute_deny_rules_are_rejected
-			bad = { permissions: { deny: Mill::Rules.deny + ['Read(~/.ssh/**)', 'Edit(/etc/**)'] } }
+			bad = Mill::Rules.for_stage('implement').merge(
+				permissions: { deny: Mill::Rules.deny + ['Read(~/.ssh/**)', 'Edit(/etc/**)'] })
 
 			with_home(rulesets: { 'implement' => bad }) do |home|
 				failed = check(home, 'ruleset for implement')
@@ -211,7 +250,8 @@ module Mill
 		# An allow list is advisory in headless mode: anything not denied runs
 		# regardless, so moving confinement there turns layer 1 off.
 		def test_confinement_in_an_allow_list_is_rejected
-			bad = { permissions: { deny: Mill::Rules.deny, allow: ['Bash(git:*)'] } }
+			bad = Mill::Rules.for_stage('implement').merge(
+				permissions: { deny: Mill::Rules.deny, allow: ['Bash(git:*)'] })
 
 			with_home(rulesets: { 'implement' => bad }) do |home|
 				problems = doctor(home).checks
@@ -223,7 +263,8 @@ module Mill
 		end
 
 		def test_an_empty_denylist_is_rejected
-			with_home(rulesets: { 'plan' => { permissions: { deny: [] } } }) do |home|
+			empty = Mill::Rules.for_stage('plan').merge(permissions: { deny: [] })
+			with_home(rulesets: { 'plan' => empty }) do |home|
 				refute check(home, 'ruleset for plan').ok
 			end
 		end

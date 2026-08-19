@@ -40,13 +40,25 @@ module Mill
 
 		def self.deny = REQUIRED_DENY + EXTRA_DENY
 
+		# The Bash sandbox denies outbound network by default, and takes a domain
+		# allowlist. Measured 2026-08-19: with these two hosts allowed, api.github.com
+		# answered 200 and example.com came back `X-Proxy-Error: blocked-by-allowlist`.
+		#
+		# So only the two stages that must reach GitHub can, and the other seven
+		# reach nothing at all. That is stronger than the design's original accepted
+		# risk of "network access inside a stage is unrestricted", and it was found
+		# the way everything else here was: the pr stage hit the wall on the first
+		# real run and asked rather than guessing.
+		NETWORK = { 'pr' => %w[github.com api.github.com], 'push' => %w[github.com api.github.com] }.freeze
+
 		# No `allow` key, ever. An allow list is advisory in headless mode — a tool
 		# in neither allow nor deny runs anyway — so confinement placed there turns
-		# layer 1 off while looking like it tightened something.
-		def self.for_stage(_stage)
+		# layer 1 off while looking like it tightened something. `sandbox.network`
+		# is a different mechanism and does confine: it is a proxy, not advice.
+		def self.for_stage(stage)
 			{
 				permissions: { deny: deny },
-				sandbox: { enabled: true }
+				sandbox: { enabled: true, network: { allowedDomains: NETWORK.fetch(stage, []) } }
 			}
 		end
 

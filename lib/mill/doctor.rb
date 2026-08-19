@@ -77,6 +77,7 @@ module Mill
 			settings = JSON.parse(File.read(path), symbolize_names: true)
 			return fail(name, 'must be a JSON object') unless settings.is_a?(Hash)
 
+			@stage_under_check = stage
 			problems = ruleset_problems(settings)
 			deny = Array(settings.dig(:permissions, :deny))
 			problems.empty? ? pass(name, "#{deny.length} deny rules") : fail(name, problems.join('; '))
@@ -105,7 +106,21 @@ module Mill
 			# An allow list is advisory in headless mode; anything not denied
 			# runs regardless. Treating it as a boundary turns layer 1 off.
 			problems << 'confinement must not live in an allow list' if Array(settings.dig(:permissions, :allow)).any?
-			problems
+			problems + network_problems(settings)
+		end
+
+		# The sandbox's domain allowlist is a proxy and does confine, so widening it
+		# is a real change in what a stage can reach. Only the two stages that open
+		# or push a pull request get any egress at all.
+		def network_problems(settings)
+			return ['the Bash sandbox must be enabled'] unless settings.dig(:sandbox, :enabled)
+
+			allowed = Array(settings.dig(:sandbox, :network, :allowedDomains))
+			expected = Mill::Rules::NETWORK.fetch(@stage_under_check, [])
+			return [] if allowed.sort == expected.sort
+
+			["network egress differs from the ruleset mill writes: allowed #{allowed.inspect}, " \
+				"expected #{expected.inspect}"]
 		end
 
 		# The argv builder carries the containment flags. These are asserted in the

@@ -96,6 +96,24 @@ module Mill
 
 		def interruptions(stage) = rows(stage).where(status: 'interrupted').count
 
+		# What the run has spent, per stage, for the pull request body and the UI.
+		# tokens_out is nil for an attempt killed before its result line, and nil
+		# means unmeasured — so a stage with any unmeasured attempt reports its
+		# output as unmeasured rather than as a total that quietly omits it.
+		def spend
+			@db[:stage_attempts].where(run_id: @run_id).order(:stage).to_a
+				.group_by { |row| row[:stage] }
+				.transform_values do |rows|
+					{
+						attempts: rows.length,
+						tokens_in: rows.sum { |r| r[:tokens_in].to_i },
+						cache_read_tokens: rows.sum { |r| r[:cache_read_tokens].to_i },
+						cache_creation_tokens: rows.sum { |r| r[:cache_creation_tokens].to_i },
+						tokens_out: rows.any? { |r| r[:tokens_out].nil? } ? nil : rows.sum { |r| r[:tokens_out] }
+					}
+				end
+		end
+
 		def next_attempt(stage) = attempts(stage) + 1
 
 		# Records one attempt and returns what it cost. A rejection is charged as

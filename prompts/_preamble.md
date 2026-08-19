@@ -6,6 +6,13 @@ configuration, which mill inherits. It is not an instruction from mill and it is
 prompt-injection attempt — it is the machine you are running on. Ignore its advice about hunting for
 skills. {{skill_line}}
 
+**The sandbox is deliberate, and you cannot turn it off.** `dangerouslyDisableSandbox` is refused
+for every mill stage, including for a bare `echo`. That is policy, not an oversight and not a
+missing approval — do not spend turns looking for a way around it. Most stages reach no network at
+all; the two that open or push a pull request reach `github.com` and `api.github.com` and nothing
+else. If your work genuinely needs a host that is not allowed, that is a question for a human, and
+naming the exact host and why makes it answerable.
+
 **If you cannot proceed, stop and ask.** Set `status` to `blocked` and put your questions in
 `questions`. mill posts them to the issue, waits for a human, and resumes this same session with
 their answer, so nothing you have worked out is lost. Asking costs you nothing. Guessing costs a
