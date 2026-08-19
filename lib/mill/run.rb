@@ -152,7 +152,9 @@ module Mill
 				log = File.join(Mill.home, 'logs', @run_id.to_s,
 					"#{Mill::Stages.slug(stage)}-#{number}.jsonl")
 				attempt = @claude.new(stage).run(prompt, number: number, worktree: @worktree,
-					log_path: log, session_id: session_id, env: Mill::Rules.env_for(stage),
+					log_path: log, session_id: session_id,
+					env: Mill::Rules.env_for(stage, owner: @owner, name: @name),
+					secrets: Mill::Secrets.values_for(stage, owner: @owner, name: @name),
 					on_spawn: method(:record_identity))
 				forget_identity
 				attempt
