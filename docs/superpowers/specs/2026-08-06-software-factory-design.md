@@ -1,6 +1,6 @@
 # mill — a software factory
 
-Design doc. 2026-08-06, revised five times — see [Revision history](#revision-history).
+Design doc, begun 2026-08-06. Git holds the history of how it changed.
 
 ## Contents
 
@@ -47,7 +47,6 @@ Design doc. 2026-08-06, revised five times — see [Revision history](#revision-
   - [Plan D — Observe and interrupt](#plan-d--observe-and-interrupt)
   - [Plan E — Other routes](#plan-e--other-routes)
   - [Not yet planned](#not-yet-planned)
-- [Revision history](#revision-history)
 - [Sources](#sources)
 
 ## What mill is
@@ -168,7 +167,9 @@ in a supervising loop that logs the exception and restarts the thread with backo
 `Thread.report_on_exception` stays at its default of true. Each writes a heartbeat, and `GET /`
 reports an error when either goes stale.
 
-**Stack.** Ruby, Roda, Sequel, SQLite, Puma, Minitest — and stdlib for everything else.
+**Stack.** Ruby, Roda, Sequel, SQLite, Puma, Minitest, and Faraday for the OAuth exchange — stdlib
+for everything else. mill runs on macOS and Linux; the OS-specific facts it needs sit behind one
+platform module, listed in [Sleep and wake](#sleep-and-wake).
 
 Surveyed and deliberately rejected, so it need not be re-argued: a **state machine gem** (AASM,
 Statesman, MicroMachine) — the six run statuses are a case statement, and the stage graph is a
@@ -365,17 +366,17 @@ knows what to do.
 
 ### Stages, models, and skills
 
-| Stage | Model | Toolset (`--tools`) | Skill invoked | Produces |
-|---|---|---|---|---|
-| `triage` | Sonnet | `Read,Glob,Grep` | none | route, actionability |
-| `plan` | Opus | `Read,Glob,Grep,Write` | `superpowers:writing-plans` | `docs/superpowers/plans/<date>-<slug>.md` |
-| `review:plan` | Opus | `Read,Glob,Grep` | `adversarial-reviewer` | objections |
-| `diagnose` | Opus | `Read,Glob,Grep,Bash` | `superpowers:systematic-debugging` | root cause, recorded in the PR body |
-| `implement` | Opus | `Read,Glob,Grep,Write,Edit,Bash` | `mill:implement` | code + tests |
-| `implement:fast` | Opus | `Read,Glob,Grep,Write,Edit,Bash` | `superpowers:test-driven-development` | code + tests |
-| `review:code` | Opus | `Read,Glob,Grep,Bash` | `adversarial-reviewer` | objections |
-| `pr` | Opus | `Read,Glob,Grep,Bash` | `mill:pr` | pull request |
-| `push` | Opus | `Read,Bash` | none | pushed commits on an existing PR |
+| Stage | Model | Toolset (`--tools`) | Mode | Skill invoked | Produces |
+|---|---|---|---|---|---|
+| `triage` | Sonnet | `Read,Glob,Grep` | default | none | route, actionability |
+| `plan` | Opus | `Read,Glob,Grep,Write,Skill` | `acceptEdits` | `superpowers:writing-plans` | `docs/superpowers/plans/<date>-<slug>.md` |
+| `review:plan` | Opus | `Read,Glob,Grep,Skill` | default | `adversarial-reviewer` | objections |
+| `diagnose` | Opus | `Read,Glob,Grep,Bash,Skill` | default | `superpowers:systematic-debugging` | root cause, recorded in the PR body |
+| `implement` | Opus | `Read,Glob,Grep,Write,Edit,Bash,Skill` | `acceptEdits` | `mill:implement` | code + tests |
+| `implement:fast` | Opus | `Read,Glob,Grep,Write,Edit,Bash,Skill` | `acceptEdits` | `superpowers:test-driven-development` | code + tests |
+| `review:code` | Opus | `Read,Glob,Grep,Bash,Skill` | default | `adversarial-reviewer` | objections |
+| `pr` | Opus | `Read,Glob,Grep,Bash,Skill` | default | `mill:pr` | pull request |
+| `push` | Opus | `Read,Bash` | default | none | pushed commits on an existing PR |
 
 Sonnet for cheap mechanical passes, Opus for judgment and code. No user-facing toggle; you
 change the map by editing config.
@@ -384,9 +385,26 @@ The toolset column is the fail-closed half of [Containment](#containment) layer 
 deliberately mean. Four stages get no write tool at all, which makes a whole class of deny rule
 unnecessary for them: `review:plan` cannot modify the plan it is reviewing no matter what its
 prompt says. `review:code` and `diagnose` get Bash because they need to run the test suite, and
-that is where the command-level deny rules earn their place. Only `implement`, `implement:fast`,
-and `pr` can both write files and run commands, and those three are where a reviewed ruleset
-matters most.
+that is where the command-level deny rules earn their place. Only `implement` and
+`implement:fast` can both write files and run commands, and those two are where a reviewed
+ruleset matters most.
+
+**`Skill` is in every toolset that names a skill**, because `--tools` gates it like any other
+tool. Measured 2026-08-19 on CLI 2.1.227: a stage run with `Read,Glob,Grep` reported it had no
+Skill tool and named the three it did have, so it could not load `writing-plans`,
+`adversarial-reviewer`, or anything else; adding `Skill` made it work first try. Without this
+the design's whole skill-per-stage column was decorative — every stage would have improvised
+from memory instead of following the skill, silently and at full cost. `triage` and `push` name
+no skill, so they do not get the tool.
+
+**The three stages that write files run `--permission-mode acceptEdits`.** In headless `-p` under
+the default mode there is nobody to answer a write prompt, so *every* file write is refused —
+measured on a file with no rule against it at all. Without the flag `implement`
+could not have created a single line of code; it would have burned both strikes and blocked, on
+every run. `acceptEdits` is not `bypassPermissions`: the same probe confirmed `Edit(.claude/**)`
+and `Edit(.github/workflows/**)` still blocked while an ordinary file was edited, so deny rules
+keep binding and the prohibition on `--dangerously-skip-permissions` stands untouched. Reads and
+Bash need no such flag — both work under the default mode.
 
 `implement` and `implement:fast` differ by whether a plan exists — `mill:implement` works through
 one, `test-driven-development` does not need one. That distinction tracks the real difference
@@ -459,28 +477,25 @@ telling its executor to use `subagent-driven-development` or `executing-plans` �
 mill's `plan` stage would produce a document instructing mill's `implement` stage to load the two
 skills it must not. The `plan` stage prompt replaces that header with one naming `mill:implement`.
 
-**Open: how a stage receives its skill at all, and where mill's own two live.** `Skill` is itself a
-tool, and no stage's `--tools` list contains it — every list is a subset of `Read`, `Glob`, `Grep`,
-`Write`, `Edit`, and `Bash`. By the spike's own rule, a tool omitted from `--tools` cannot be
-called, so as written no stage can load any skill: not `mill:implement`, and not the four borrowed
-ones either. **Verify this behaviourally before Plan B**, with the same probe methodology the spike
-used.
+**How a stage receives its skill, and where mill's own two live.** `Skill` is itself a tool gated
+by `--tools`, measured 2026-08-19: a stage without it cannot load any skill and says so. So every
+stage that names a skill carries the tool, and `--settings` merging rather than replacing means
+those stages also inherit the operator's `enabledPlugins`, so `superpowers:` names resolve without
+mill enumerating anything.
 
-If it holds, there are two ways out and they trade against each other. Adding `Skill` to every
-toolset is simplest and stays current with upstream, but that tool can load *anything* on the
-machine — including the two skills this section just removed — so the toolset stops bounding what
-instructions a stage can pull in. Baking the skill text into the prompt keeps the toolsets as tight
-as they are, makes what a stage was told exactly reproducible from mill's own files, and costs
-prompt size plus the work of tracking upstream changes by hand.
+The cost is real but acceptable: `Skill` can load *any* skill on the machine, including the two
+this section removed, so the toolset no longer bounds what instructions a stage can pull in. Three
+things make that a fair trade. Instructions are not capability — a skill telling `implement` to
+dispatch subagents cannot make it happen when `Task` is absent from `--tools`. The stage prompt
+names its skill explicitly. And verdict validation catches a stage that wandered off and produced
+the wrong artifact. Baking skill text into prompts would keep the toolsets tighter at the cost of
+forking every borrowed skill, which the non-goals rule out.
 
-Where mill's own text lives follows from that choice, with one constraint either way: it must sit
-outside every worktree, for the same reason the permission rulesets do — a stage must not be able
-to edit the instructions it runs under. It also cannot live under `~/.mill`, which is now denied to
-stages for reads. A plugin directory inside the mill repo satisfies both, is version-controlled and
-reviewed alongside the code, and makes real the `mill:` prefix this document already uses. mill's
-own skills should be self-contained in a single `SKILL.md` regardless, rather than the multi-file
-shape Superpowers uses, since a stage reading a skill's supporting files is a permission question
-mill does not need to have.
+mill's own two live in a plugin directory inside the mill repo — version-controlled and reviewed
+alongside the code, outside every worktree so a stage cannot edit the instructions it runs under,
+and outside `~/.mill`. That also makes the `mill:` prefix real, since a plugin's name is its
+prefix. Each is self-contained in a single `SKILL.md` rather than the multi-file shape Superpowers
+uses, so a stage never has to Read a supporting file.
 
 ### Finding the spec
 
@@ -694,46 +709,54 @@ mill **does not** use `--dangerously-skip-permissions`. That flag is
 permission-system concepts, skipping permissions leaves no filesystem confinement for Read,
 Write, or Edit at all. Autonomy comes from an explicit ruleset instead, in four layers.
 
-**1. A restricted toolset per stage, plus deny rules from outside the worktree.** This layer
-has two mechanisms, and the spike proved they are not interchangeable.
+**1. The working directory, a restricted toolset, and deny rules.** This layer has three
+mechanisms, and the 2026-08-19 probes established that they do very different amounts of work.
+
+**The working directory is the filesystem boundary, and it is fail-closed.** A stage cannot read
+or write outside the worktree it was given, whether or not any rule says so. Measured with an
+*empty* deny list: a stage refused both to read and to write a file in `~`, reporting the path as
+outside its allowed directory. This is the strongest thing in layer 1 and the design previously
+credited it to the deny rules instead. It also means the `~/.ssh`, `~/.aws`, `~/.config/gh`, and
+`~/.mill` protections are already in force before any ruleset is read.
 
 `--tools` decides which built-in tools exist at all for a stage. A tool absent from the list
-cannot be called — the agent reports it has no such tool and adapts. **This is the fail-closed
-part**, and it is where most of mill's confinement comes from.
+cannot be called — the agent reports it has no such tool and adapts. **Also fail-closed**, and
+the reason four stages cannot modify anything no matter what their prompt says.
 
 `--settings ~/.mill/settings/<stage>.json` carries **deny** rules that scope paths and commands
-within the tools that remain. Deny rules work, including at command level: `Bash(curl:*)` blocks
-curl while `echo` still runs. **This part is fail-open** — anything not denied is permitted.
+*within* the worktree and within the tools that remain. Deny rules work at command level
+(`Bash(curl:*)` blocks curl while `echo` runs) and on worktree-relative paths. **This part is
+fail-open** — anything not denied is permitted.
+
+**Deny rules must be worktree-relative. An absolute path silently does nothing.** Measured in one
+run, with `Bash(curl:*)` in the same file proving the file was loaded: `Read(/tmp/probe/a.txt)`
+did not block, `Read(//tmp/probe/b.txt)` did not block, and `Read(c.txt)` blocked correctly. This
+is the same failure shape as `Write(...)` versus `Edit(...)` — a rule that looks right, is
+accepted without complaint, and enforces nothing. Nothing outside the worktree needs a rule
+anyway, because the working directory already covers it; the danger is a future maintainer writing
+an absolute deny and believing it protects something. `mill:doctor` rejects any absolute path in a
+ruleset, and the boundary suite has a regression test for it.
 
 An `allow` list does **not** confine. In headless `-p` it is advisory, pre-approving things so
-they skip a prompt; a tool absent from `allow` and absent from `deny` runs anyway, under every
-permission mode. Anyone reading this ruleset should not mistake `allow` for a boundary.
+they skip a prompt; a tool absent from `allow` and absent from `deny` runs anyway. Anyone reading
+this ruleset should not mistake `allow` for a boundary.
 
-Two consequences follow. First, **strip the toolset as far as each stage allows**, so the
-denylist has less to cover — see the toolset column in
-[Stages, models, and skills](#stages-models-and-skills). Second, the doc's own critique of
-denylists — that one "measures only the bypasses its author imagined" — now applies to part of
-layer 1, not just the `PreToolUse` hook. Tool selection is a boundary; command scoping is a
-best effort.
+So: **strip the toolset as far as each stage allows**, and treat deny rules as scoping *inside* an
+already-closed box rather than as the box itself. The doc's own critique of denylists — that one
+"measures only the bypasses its author imagined" — applies to this third mechanism. The first two
+are boundaries; command and path scoping is a best effort.
 
-Every stage denies the same things: `Edit(.claude/**)`, `Edit(.mill.yml)`,
-`Edit(.github/workflows/**)`, and `Edit(.github/actions/**)`; **both reads and edits of
-`~/.mill/**`**; reads of `~/.ssh/**`, `~/.aws/**`, `~/.config/gh/**`, `**/.env`, and `**/.env.*`;
-and every `gh` subcommand except the narrow set `pr` and `push` require.
+Every stage denies the same things, all worktree-relative: `Edit(.claude/**)`, `Edit(.mill.yml)`,
+`Edit(.github/workflows/**)`, `Edit(.github/actions/**)`, reads of `.env` and `.env.*`, and every
+`gh` subcommand except the narrow set `pr` and `push` require. Both `Edit(.claude/**)` and
+`Edit(.github/workflows/**)` were confirmed to block under `acceptEdits` while an ordinary file in
+the same run was edited successfully.
 
-**`~/.mill` is denied whole, in both directions.** No stage has any business there: the verdict
-travels on the stream and mill writes it, so nothing a stage does needs that directory. Denying it
-whole is the only version of this rule that is easy to state and easy to test, and it covers three
-things at once — the stage token and per-repo secrets under `secrets/`, every other run's verdicts
-and the state database, and, most importantly, the stage's own permission ruleset under
-`settings/`. The settings file was moved out of the worktree precisely because an agent that can
-write its own rules can disarm itself mid-session; leaving the new location writable would have
-moved the path the disarm uses rather than closing it.
-
-**Two globs, not one, for env files.** `**/.env*` matches `.env` and `.env.local` but not
-`ownerB-repoB.env`, which is what mill's own secrets files are called — a hole that only closes
-because `~/.mill/**` is now denied outright, and the pair of globs is what covers repo-side env
-files with names of both shapes.
+**`~/.mill` needs no rule, and must not be given an absolute one.** No stage has any business
+there — the verdict travels on the stream and mill writes it — and the working directory already
+makes it unreachable. The settings file was moved out of the worktree precisely because an agent
+that can write its own rules can disarm itself mid-session; what actually keeps it out of reach is
+that it sits outside the worktree, not a deny rule naming it.
 
 **Write file denies in the `Edit(...)` form, never `Write(...)`.** Claude Code matches file
 permission checks against `Edit(path)` rules only, and `Edit` rules cover every file-editing
@@ -747,9 +770,18 @@ built-in tools only; without this flag a stage inherits whatever MCP servers the
 configured. On the machine this was spiked on, that included a Google Drive connector. mill's
 stages need no MCP servers at all.
 
-The settings file lives outside the worktree because `bypassPermissions` permits writes to
-`.claude/` and the settings watcher picks them up — so an agent could disarm its own
-restrictions *mid-session*.
+The settings file lives outside the worktree because a stage that could write `.claude/` would be
+picked up by the settings watcher and could disarm its own restrictions *mid-session*. Being
+outside the worktree is what enforces that, with `Edit(.claude/**)` as a second line inside it.
+
+**`--settings` merges with your own settings; it does not replace them.** Measured: with a mill
+ruleset passed, its `Bash(curl:*)` deny bound *and* the operator's `enabledPlugins` still applied,
+so `superpowers:` skills resolved normally. That is what makes the skill-per-stage design work at
+all — mill does not have to enumerate plugins. Two consequences worth knowing: a stage inherits
+the operator's `SessionStart` hooks, including the Superpowers one that urges aggressive skill
+hunting, and a change to `~/.claude/settings.json` can change stage behaviour. `mill:doctor`
+records the resolved skill source and version per attempt so a verdict can be traced back to the
+text that produced it.
 
 mill denies `.github/workflows/**` because when a stage pushes a branch that modifies a
 workflow, GitHub runs the modified workflow with repository secrets in scope. If a stage
@@ -1084,7 +1116,10 @@ raised after mill marks a comment processed drops your answer with no trace.
 mill persists `pgid`, `pid`, `pid_started_at`, and `host_boot_at` when it spawns an attempt.
 Three fields are needed rather than one because pids are recycled: after a reboot they restart
 low, so a stored pgid of `431` may well be alive and belong to a system daemon. `host_boot_at`
-comes from `sysctl -n kern.boottime`; `pid_started_at` from the process table.
+comes from `sysctl -n kern.boottime` on macOS and `btime` in `/proc/stat` on Linux;
+`pid_started_at` from the process table on either. Both go through the platform module in
+[Sleep and wake](#sleep-and-wake) — this is the one code path where getting the wrong value means
+signalling the wrong process.
 
 The runner writes `heartbeat_at`; at boot and on a timer, mill checks every run marked `running`.
 
@@ -1134,11 +1169,35 @@ board and open mill PRs — not every issue in every repo the board touches.
 
 ## Web UI
 
-Roda and Sequel. mill binds `tcp://127.0.0.1:9494` explicitly — Puma defaults to `0.0.0.0`,
-which would expose log tails and the kill switch to the local network. mill rejects any request
-whose `Host` is not `localhost:9494` or `127.0.0.1:9494`, which defeats DNS rebinding. Every
+Roda and Sequel. Puma defaults to `0.0.0.0`, so mill always binds explicitly, and the bind plus
+the `Host` allowlist are config rather than constants because they differ by deployment. Every
 POST requires a CSRF token via Roda's `route_csrf`, because the browser treats a cross-origin
 form POST as a CORS simple request and does not preflight it.
+
+**Two deployments, two access models.**
+
+On a laptop mill binds `tcp://127.0.0.1:9494` and allows only `localhost:9494` and
+`127.0.0.1:9494` as `Host`, which defeats DNS rebinding. Nothing else is needed: the loopback
+interface is the boundary.
+
+On a server the UI is reachable over the network, so it needs an identity check of its own.
+mill uses Google OAuth with an email allowlist — the same shape as `~/code/rep`: an `AuthApp`
+mounted at `/auth`, an `Authentication` helper exposing `current_user`, `logged_in?`, and
+`require_login!`, and `MILL_ADMIN_EMAILS` as a comma-separated list checked against the verified
+address. mill needs no user table; the verified email in the session is the whole model.
+
+Four things follow, and none is optional:
+
+- **Every route requires an allowlisted session except `/auth/*`.** The write paths are a kill
+  switch and a worktree deleter, and `GET /runs/:id/log` streams repo contents.
+- **TLS is mandatory**, because Google refuses a non-HTTPS redirect URI for anything but
+  localhost. A reverse proxy terminates it; the runbook covers the certificate.
+- **The `Host` allowlist gains the deployment hostname.** It is what defeats DNS rebinding, so
+  it must be tightened to the real name rather than dropped.
+- **The session cookie is `secure`, `httponly`, and `samesite=lax`**, with a stable secret from
+  the environment, since a leaked session is a kill switch.
+
+Faraday handles the token exchange and userinfo fetch, matching `rep`.
 
 ```
 GET  /                 run list: subject, route, stage, status, tokens, disk, health
@@ -1239,6 +1298,23 @@ callback needs IOKit, which is a native dependency for a single notification.
 
 Two things break instead: every socket that was open, and every deadline mill measures in wall
 time.
+
+**Two platforms, one seam.** mill runs on macOS (a laptop) and Linux (a server), and the four
+OS-specific facts it needs sit behind one small platform module rather than being spread through
+the supervisor. The clock pair is the trap: the two systems name the *same* semantics with
+*different* constants, so a copied line is not merely unportable, it computes sleep backwards.
+
+| What mill needs | macOS | Linux |
+|---|---|---|
+| Clock that excludes sleep (the awake clock) | `CLOCK_UPTIME_RAW` | `CLOCK_MONOTONIC` |
+| Clock that includes sleep (the continuous clock) | `CLOCK_MONOTONIC` | `CLOCK_BOOTTIME` |
+| Boot time, for the reboot check | `sysctl -n kern.boottime` | `btime` in `/proc/stat` |
+| Process start time, to confirm a pid | `ps -o lstart=` | field 22 of `/proc/<pid>/stat` |
+| Keep the machine awake while a stage runs | `caffeinate` | `systemd-inhibit`, or nothing on a server |
+
+A server never idle-sleeps, so most of this section is inert there — but the stall detector is
+not, because a dead socket is a dead socket on any host, and it is the mechanism that catches a
+wedged stage regardless of cause.
 
 **Measuring the gap.** On Darwin `CLOCK_MONOTONIC` counts time spent asleep and
 `CLOCK_UPTIME_RAW` does not, so the difference between their deltas across a tick is exactly how
@@ -1358,6 +1434,7 @@ Every row resolves to `blocked` or `failed`. None resolves to silent success.
 | Handling a comment event raises | Increments `events.attempts` and retries, marking it `dead` after the cap | n/a |
 | Writing Status to the board fails | Leaves `desired_board_status` unconfirmed and retries until it lands | n/a |
 | Board Status changes that mill did not write | Reports it as board interference rather than silently obeying | n/a |
+| Web request without an allowlisted session (server deployment) | Redirects to the Google sign-in; no run state is readable or writable | n/a |
 | Poller hits an auth failure or a 404 | Marks the repo unhealthy and surfaces it, distinct from rate limiting | n/a |
 | GitHub rate-limits `gh` | Backs off to a ceiling and leaves the cursor alone, so it loses nothing | n/a |
 | Poller or supervisor thread raises | Logs it, restarts the thread with backoff, and surfaces its health | n/a |
@@ -1405,7 +1482,19 @@ tokens.
     against some tools and not others. If Grep can match content inside a denied path, the read
     half of layer 1 is partly inert and nothing would notice. Probe a denied path with all three
     tools.
-  - `~/.mill/**` is unreachable: a stage can neither read its own settings file nor write one.
+  - **The working directory confines, with an empty ruleset.** Assert a stage cannot read or
+    write a file in `~` when no deny rule mentions it. This is the strongest guarantee in layer 1
+    and nothing else tests it.
+  - **An absolute-path deny rule does not confine** — the regression test for the trap. Assert
+    that `Read(/abs/path)` fails to block while a worktree-relative rule in the same file blocks,
+    so nobody writes an absolute rule and believes it protects something.
+  - **`Skill` is gated by `--tools`.** Assert a stage without it cannot load a skill, and one
+    with it can. Every stage that names a skill depends on this.
+  - **`acceptEdits` still honours deny rules.** Assert that under `--permission-mode acceptEdits`
+    an ordinary file is edited while `Edit(.claude/**)` still blocks. If this ever stops holding,
+    the three writing stages lose their in-worktree scoping.
+  - **`--settings` merges rather than replaces.** Assert that a passed ruleset's deny binds while
+    plugin skills still resolve.
   - `--strict-mcp-config` leaves no MCP tools reachable.
   - **A regression test against the wrong mental model:** assert that a tool present in neither
     `allow` nor `deny` still runs. It does, under every permission mode. Anyone who later
@@ -1485,8 +1574,10 @@ given that verification is the bottleneck. mill defers it; see [Deferred](#defer
   comment marker are the only signals.
 - **The permission ruleset is the boundary, and `implement` needs a wide one.** Layers 2–4
   narrow the consequences; they do not make a stage harmless.
-- **Local only.** When your laptop sleeps, the factory stops. mill recovers whatever was in
-  flight — see [Sleep and wake](#sleep-and-wake) — but nothing progresses while the lid is shut.
+- **Single machine, and on a laptop the factory stops when the lid shuts.** mill recovers
+  whatever was in flight — see [Sleep and wake](#sleep-and-wake) — but nothing progresses while
+  the machine is asleep. A server deployment avoids that entirely and is the expected home;
+  the laptop remains supported for development, which is why the platform module exists.
 - **No unattended path from a vague idea to a PR**, by design. If you have not thought it
   through, mill will not think it through for you.
 - **The review loop may not converge.** The reviewer skill assumes defects exist, and a `high`
@@ -1565,9 +1656,15 @@ with branch protection, so those mechanics are exercised too. It also needs a fi
 Plan B: an issue, `gh issue develop`, and a committed spec on the linked branch, or the `plan`
 route arrives to find nothing to adopt.
 
-**Two measurements gate two plans, and both need you at the machine.** Neither is design work and
-neither can be done from inside a Claude Code session; both block reasoning that already assumes
-the answer.
+**Settled 2026-08-19, against CLI 2.1.227.** Two questions that gated Plan B are now measured, and
+both had consequences — see [Containment](#containment) and the toolset table for what changed.
+`Skill` is gated by `--tools`, so every stage that names a skill now carries the tool. Headless
+mode refuses *every* file write under the default permission mode, so the three writing stages
+carry `--permission-mode acceptEdits`, which still honours deny rules. `--settings` merges with
+the operator's settings rather than replacing them. Absolute-path deny rules silently do nothing.
+And the working directory, not the deny list, is what keeps a stage out of `~`.
+
+**Three measurements remain, and two need you at the machine.**
 
 1. **Does the awake clock really stop during sleep?** Record
    `Process.clock_gettime(Process::CLOCK_MONOTONIC)` and
@@ -1577,14 +1674,13 @@ the answer.
 2. **Can the Projects v2 API report whether a built-in workflow is enabled?** Five minutes against
    the GraphQL schema. If not, doctor's promised check needs the fallback described in
    [The board is the queue](#the-board-is-the-queue). **Gate on Plan A.**
+3. **Does `claude` authenticate headlessly on the Linux host against the subscription?** If it
+   cannot, the server deployment does not work at all and mill is laptop-only after all. Ten
+   minutes on the VPS. **Gate on deploying anywhere but the laptop.**
 
-Two more are cheapest to answer while building rather than before. **Does the tee see a command
-announced when it starts, or only when it finishes?** The stall detector's ability to tell a slow
-test suite from a wedged stage depends on it — answer during Plan A. And **can a stage invoke a
-skill when `Skill` is absent from its `--tools` list?** Every stage in the graph names a skill, and
-none of the toolsets includes the tool that loads one; see
-[Skills mill borrows, and skills mill owns](#skills-mill-borrows-and-skills-mill-owns) for what
-each answer costs. Settle it before Plan B writes the stage prompts.
+One more is cheapest to answer while building: **does the tee see a command announced when it
+starts, or only when it finishes?** The stall detector's ability to tell a slow test suite from a
+wedged stage depends on it — answer during Plan A.
 
 **Write one plan at a time**, and execute it before writing the next — doing Plan A teaches things
 that change Plan B, and a stale plan actively misleads. Each plan names the spec sections it
@@ -1681,75 +1777,6 @@ blocks, your comment resumes it, the run finishes.
 
 Evidence deliverable and deep review. Both are the most likely to change once mill has actually
 been used, so planning them now would be guessing.
-
-## Revision history
-
-**Revision 5 — an adversarial review, and the attempt ledger.** An independent review found 24
-defects and bet that six of them were one hole seen from six sides: nothing defined what an attempt
-was, so every recovery path charged the two-strike counter differently and the fragments disagreed.
-[The attempt ledger](#the-attempt-ledger) is the answer — an invocation number that counts every
-launch, and a strike count that rises only when the work was wrong. Everything the machine does to
-a stage is now free, and every free path has its own cap.
-
-The review's critical finding was that `triage` and `review:plan` hold no tool that can create a
-file, so neither could write the verdict the contract demanded, and every route begins with
-`triage`. The verdict now arrives as the stage's last message on the stream and mill writes the
-file itself, which also let `~/.mill` be denied outright — closing a hole where a stage with Write
-could have edited the permission ruleset that was moved out of the worktree to stop exactly that.
-
-Reading the borrowed skills properly also showed that two of them fight the graph rather than fit
-inside it. `executing-plans` redirects to a skill `implement` has no tool to run, creates a
-worktree mill already made, and ends by opening the pull request `review:code` has not yet gated;
-`finishing-a-development-branch` presents a menu whose first option is merging locally, which is
-the one thing mill must never do. Those two stages now use `mill:implement` and `mill:pr`, which
-keep the practices worth keeping — one task at a time, test-first, evidence rather than assertion,
-self-review, a commit per task, stop rather than guess — and drop everything that assumes a human
-in a terminal. The plan file's checkboxes become the ledger that survives a compacted context.
-
-Also: a stage running a slow test suite is no longer killed as wedged; a rate-limited stage no
-longer times out; a comment on a mill PR needs a `mill:` marker before it starts a run, and a
-comment on a blocked item is always an answer; a branch still checked out in your clone blocks
-instead of failing on a git error; the boot-time check no longer reads an NTP correction as a
-reboot; a permanently red CI check stops after two fix runs per commit instead of costing pipelines
-daily forever; deep review joined the failure taxonomy and gained a ceiling; and the two empirical
-claims nothing has tested — the sleep clock and the board's workflow API — are named as gates on
-Plan C and Plan A rather than assumed.
-
-**Revision 4 — the spike ran, and layer 1 was wrong.** Containment assumed an `allow` list
-confines a stage. It does not: in headless `-p` an unlisted tool runs anyway, under every
-permission mode. Layer 1 is now `--tools` for fail-closed tool selection plus deny rules for
-best-effort path and command scoping, with a per-stage toolset column making the first half
-concrete. `Write(...)` deny rules turned out to be silently inert — only `Edit(...)` is
-matched — and stages inherited the operator's MCP servers until `--strict-mcp-config`. Token
-accounting grew two cache columns after cache reads outweighed fresh input by three orders of
-magnitude, and rate limits joined the failure taxonomy as the real ceiling on a subscription. The
-boundary suite gained a regression test asserting that an `allow`-only ruleset does *not* confine,
-so nobody re-introduces the original mistake. Dependency survey recorded in the stack note.
-
-**Revision 3 — sleep and wake.** mill runs on a laptop, so sleep is a normal operating condition
-rather than an exception. Sleep kills nothing, so nothing needs saving; what it breaks is open
-sockets and wall-clock deadlines. Every deadline now declares which clock it reads, and mill
-measures how long it slept by differencing the continuous and awake clocks. A stall detector
-watches stream-json for silence and rescues a stage left holding a dead socket, without charging
-it a strike. A settle window stops the first poll after a wake from marking every repo unhealthy.
-`POST /pause` lets you stop the line before you shut the lid.
-
-**Revision 2 — plan quality, board ingress, honest containment.** mill no longer designs: you
-produce a reviewed spec interactively, and mill keys routes on what the ticket already contains
-rather than on how big the change looks. A Project board read as state replaces labels. The repo
-watchlist and the picker are gone — the token allowlists repos, the board queues the work, and
-mill prepares a repo on first touch. Fresh per-finding agents now do deep review's refuting,
-under an explicit invariant that no agent reviews an artifact it produced. Osmani's framing moved
-out of the opening and into [Why this shape](#why-this-shape), so the doc defines the pipeline
-before it justifies it.
-
-**Revision 1 — the adversarial review.** A three-lens review, plus a pass that tried to refute
-every claim, produced 62: 14 confirmed, 22 partial, 26 refuted. They traced to four root causes,
-and this revision fixes each at the root. Containment was fictional, because
-`--dangerously-skip-permissions` provides no filesystem confinement. Labels are events, and every
-swap had a crash window. Every stage wrote the verdict to one shared mutable path, so a crashed
-stage inherited its predecessor's `ok`. And three of five triggers had no route, no identity, and
-no cursors.
 
 ## Sources
 

@@ -20,7 +20,8 @@ running it over trusting this document — it checks reality.
 - [5. Mint the stage token](#5-mint-the-stage-token)
 - [6. Branch protection](#6-branch-protection)
 - [7. Per-repo secrets](#7-per-repo-secrets)
-- [8. Verify](#8-verify)
+- [8. Server deployment (optional)](#8-server-deployment-optional)
+- [9. Verify](#9-verify)
 
 ## 1. Two tokens, two jobs
 
@@ -178,7 +179,32 @@ that repo's `.mill.yml` so `mill:doctor` can check they are present.
 Use test-scoped values, not production ones. Nothing prevents an agent from printing an
 environment variable into a log it is allowed to write.
 
-## 8. Verify
+## 8. Server deployment (optional)
+
+Skip this on a laptop, where mill binds loopback and needs no identity check.
+
+On a server the UI is reachable over the network, so it needs Google OAuth with an email
+allowlist. You need a hostname you control (a subdomain of a domain you already own is enough),
+TLS in front of Puma, and an OAuth client:
+
+1. **DNS and TLS.** Point a hostname at the box and terminate TLS with a reverse proxy. Google
+   refuses a plain-HTTP redirect URI for anything but localhost, so this is a precondition, not
+   a nicety.
+2. **OAuth client.** In Google Cloud Console, create an OAuth 2.0 Client ID of type *Web
+   application*, with the authorised redirect URI `https://<host>/auth/google_oauth2/callback`.
+3. **Environment.** Set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, a stable
+   `SESSION_SECRET`, and `MILL_ADMIN_EMAILS` as a comma-separated allowlist. Set the bind address
+   and the `Host` allowlist to the real hostname.
+4. **Verify `claude` authenticates on the box.** Run one `claude -p` there before trusting the
+   deployment. If a headless host cannot authenticate against your subscription, the server
+   deployment does not work and mill is laptop-only.
+
+Anything on the network can reach the sign-in page, and the allowlist is what stands between it
+and a kill switch. Binding to a private network — Tailscale or a VPN — instead of the public
+internet is a reasonable second layer, and Google will still accept the redirect URI provided the
+name resolves publicly and carries a valid certificate.
+
+## 9. Verify
 
 ```
 bundle exec rake mill:doctor
@@ -196,7 +222,12 @@ It checks, and names anything missing:
   permissions
 - `~/.mill` and `~/.mill/secrets` are `0700`
 - the permission ruleset files in `~/.mill/settings/` exist and deny the paths the design doc
-  requires
+  requires, **with no absolute paths** — an absolute deny rule is accepted silently and enforces
+  nothing, so doctor treats one as a failure
+- every stage that names a skill has `Skill` in its toolset, and the three writing stages carry
+  `--permission-mode acceptEdits`
+- on a server: the OAuth variables, the session secret, a non-empty `MILL_ADMIN_EMAILS`, and a
+  `Host` allowlist that is not the loopback default
 - for every repo the board currently references: the clone resolves, `origin` matches, `gc.auto`
   and `maintenance.auto` are `0`, `.mill.yml` parses, its `ci_workflow` resolves to a real
   workflow whose checks are required on the base branch, and every secret variable it names is

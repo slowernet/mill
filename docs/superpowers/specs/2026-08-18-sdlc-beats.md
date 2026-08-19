@@ -143,7 +143,7 @@ underspecified issue. **(mill: "triage defaults to blocking")**
 
 ## 2. `plan` — turn the spec into buildable tasks
 
-**Model:** Opus. **Tools:** Read, Glob, Grep, Write. **Skill:** `superpowers:writing-plans`.
+**Model:** Opus. **Tools:** Read, Glob, Grep, Write, Skill. **Mode:** `acceptEdits`. **Skill:** `superpowers:writing-plans`.
 
 mill passes the plan stage the spec path, the issue body, and the triage verdict.
 
@@ -208,7 +208,7 @@ question the pipeline will ever need to ask, in one batch, before it finishes.
 
 ## 3. `review:plan` — adversarial review of the plan
 
-**Model:** Opus. **Tools:** Read, Glob, Grep. **Skill:** `adversarial-reviewer` (personal).
+**Model:** Opus. **Tools:** Read, Glob, Grep, Skill. **Skill:** `adversarial-reviewer` (personal).
 
 mill passes the plan artifact, the spec, and the diff to date.
 
@@ -237,7 +237,7 @@ No fork to maintain; when the skill improves upstream, both reviewers get it.
 
 ## 4. `diagnose` — find root cause (fast route only)
 
-**Model:** Opus. **Tools:** Read, Glob, Grep, Bash. **Skill:** `superpowers:systematic-debugging`.
+**Model:** Opus. **Tools:** Read, Glob, Grep, Bash, Skill. **Skill:** `superpowers:systematic-debugging`.
 
 mill passes the issue body and the triage verdict.
 
@@ -271,7 +271,7 @@ guessing.
 
 ## 5. `implement` — build the plan (plan route)
 
-**Model:** Opus. **Tools:** Read, Glob, Grep, Write, Edit, Bash. **Skill:** `mill:implement`.
+**Model:** Opus. **Tools:** Read, Glob, Grep, Write, Edit, Bash, Skill. **Mode:** `acceptEdits`. **Skill:** `mill:implement`.
 
 mill passes the plan artifact, the spec, the triage verdict, the review:plan verdict, and
 any reviewer objections that were addressed.
@@ -354,7 +354,7 @@ more expensive than a round trip.
 
 ## 6. `implement:fast` — build without a plan (fast and iterate routes)
 
-**Model:** Opus. **Tools:** Read, Glob, Grep, Write, Edit, Bash. **Skill:** `superpowers:test-driven-development`.
+**Model:** Opus. **Tools:** Read, Glob, Grep, Write, Edit, Bash, Skill. **Mode:** `acceptEdits`. **Skill:** `superpowers:test-driven-development`.
 
 On the fast route, mill passes the diagnose verdict (with root cause), the issue body, and
 the triage verdict. On the iterate route there is no diagnose — mill passes the triggering
@@ -379,7 +379,7 @@ throwaway code — maps onto `mill-headless`'s block-and-ask.
 
 ## 7. `review:code` — adversarial review of the code
 
-**Model:** Opus. **Tools:** Read, Glob, Grep, Bash. **Skill:** `adversarial-reviewer` (personal).
+**Model:** Opus. **Tools:** Read, Glob, Grep, Bash, Skill. **Skill:** `adversarial-reviewer` (personal).
 
 mill passes the code diff, the plan artifact (if plan route), the spec, the implement
 verdict, and all predecessor verdicts.
@@ -424,7 +424,7 @@ the adversarial-reviewer skill file itself is unchanged):
 
 ## 8. `pr` — open the pull request (plan and fast routes)
 
-**Model:** Opus. **Tools:** Read, Glob, Grep, Bash. **Skill:** `mill:pr`.
+**Model:** Opus. **Tools:** Read, Glob, Grep, Bash, Skill. **Skill:** `mill:pr`.
 
 mill passes all predecessor verdicts, the spec, the plan (if any), the branch name, and
 the base branch.

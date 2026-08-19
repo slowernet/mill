@@ -70,8 +70,10 @@ Local scripts load `defer` with a cachebusting query string:
 <script defer src="/js/utils.js?<%= ASSET_CACHEBUSTER %>"></script>
 ```
 
-mill binds `127.0.0.1:9494` and rejects requests whose `Host` is not `localhost:9494` or
-`127.0.0.1:9494`. The CDN dependencies are the only outbound requests the UI makes.
+On a laptop mill binds `127.0.0.1:9494` and rejects requests whose `Host` is not `localhost:9494`
+or `127.0.0.1:9494`. On a server both the bind and the `Host` allowlist are the deployment
+hostname, and every route requires an allowlisted Google session — see the design doc's Web UI
+section. The CDN dependencies are the only outbound requests the UI makes.
 
 ## View conventions
 
