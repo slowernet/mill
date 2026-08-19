@@ -9,7 +9,20 @@ Work arrives as GitHub activity: an issue with a spec on a linked branch, a comm
 PR, a red CI check. A GitHub Project board is the queue. One Ruby process on your own
 machine runs the whole thing.
 
-**Status: design phase.** The documents are the project so far; implementation is next.
+**Status: the `plan` route works, end to end.** An issue with a spec on a linked branch goes in;
+a pull request comes out. First real one on 2026-08-19: eighteen minutes, six stages, no strikes.
+
+What does not exist yet is the automation around that core — no board polling, no supervisor, no
+web UI, and only one of the three routes. The design doc's
+[Where this stands](docs/superpowers/specs/2026-08-06-software-factory-design.md#where-this-stands)
+is the honest inventory; the rest of that document is written in the present tense and describes
+where this is going.
+
+```
+rake mill:doctor                 # every precondition, and what is missing
+rake mill:run[owner/repo,42,~/code/repo]     # drive one issue through by hand
+rake mill:answer[2,"..."]        # answer a blocked run and resume it
+```
 
 ## Design docs
 
@@ -24,7 +37,8 @@ machine runs the whole thing.
 ## Reference
 
 - [Domain vocabulary and operational reference](docs/reference/mill.md)
-- [Setup runbook](docs/reference/setup.md) — the board, the tokens, branch protection
+- [Setup runbook](docs/reference/setup.md) — the board, the tokens, the permission rulesets,
+  and a scratch repo to rehearse against
 
 ## Stack
 

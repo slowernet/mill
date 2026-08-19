@@ -37,6 +37,17 @@ gate on everything mill produced, so write for them:
 Do not oversell it. A pull request body that reads as advocacy makes the reviewer's job harder,
 because they then have to work out what you left out.
 
+**Numbers in the body come from a command that prints that number.** Not from arithmetic on
+another number, and not from a display format that looks like the number you want. `git diff
+--stat` prints `16 +++---` beside a filename — that is lines *touched*, insertions plus
+deletions, and the first run of this stage published it as `+16/-3` when the file had gained
+13 lines and lost 3. Use `git diff --numstat <base>...HEAD`, which prints insertions, deletions
+and path as three plain columns, or quote the `N insertions(+), M deletions(-)` summary line
+verbatim.
+
+That one is small on its own and sat in the paragraph whose whole job is asserting the
+description matches the branch, which is the worst place in the body to be wrong.
+
 ## 3. Push, and hand mill the pull request
 
 Push the branch to origin. That is the only network call you make.

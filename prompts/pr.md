@@ -26,6 +26,17 @@ Load `mill:pr` and follow it:
    what you return — so the body is not a draft or a summary of a body, it is the pull request.
    Someone is going to read it and decide whether to merge.
 
+**Numbers in the body come from a command that prints that number.** Not from arithmetic on
+another number, and not from a display format that looks like the number you want. `git diff
+--stat` prints `16 +++---` beside a filename — that is lines *touched*, insertions plus
+deletions, and the first run of this stage published it as `+16/-3` when the file had gained
+13 lines and lost 3. Use `git diff --numstat <base>...HEAD`, which prints insertions, deletions
+and path as three plain columns, or quote the `N insertions(+), M deletions(-)` summary line
+verbatim.
+
+That one is small on its own and sat in the paragraph whose whole job is asserting the
+description matches the branch, which is the worst place in the body to be wrong.
+
 **You do not call the GitHub API, and that is not a restriction you should work around.** `gh`
 cannot verify TLS inside your sandbox, and mill has a working path from outside it. Every API call
 mill's side makes now goes through one seam, which is also why `gh pr merge` is not something you

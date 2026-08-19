@@ -108,6 +108,15 @@ module Mill
 			refute_match(/gh pr create/, body)
 		end
 
+		# The first real run published +16/-3 for a file that gained 13 and lost 3,
+		# having read `git diff --stat`'s "16 +++---" as insertions.
+		def test_the_pr_prompt_says_where_a_diffstat_comes_from
+			body = prompt('pr', issue: 'x', branch: 'b')
+
+			assert_match(/--numstat/, body)
+			assert_match(/lines \*touched\*|insertions plus\s*\n?\s*deletions/, body)
+		end
+
 		def test_an_unknown_stage_raises_rather_than_rendering_nothing
 			assert_raises(Mill::Error) { prompt('nonesuch', issue: 'x') }
 		end
