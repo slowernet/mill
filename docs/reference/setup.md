@@ -331,7 +331,15 @@ It checks, and names anything missing:
   catches a workflow re-enabled later
 - the stage token exists, is readable only by you, is unexpired, and has exactly the two expected
   permissions
-- `~/.mill` and `~/.mill/secrets` are `0700`
+- `~/.mill` and `~/.mill/secrets` are `0700`, and every file inside `secrets/` is `0600` — these
+  values reach a subprocess environment, and a mode that has drifted is otherwise silent
+- every directory named in `MILL_CLONES` exists. A root that does not silently becomes "clone it
+  myself" for every repo, and mill then works in a checkout you are not looking at
+- `MILL_ADMIN_EMAILS` is non-empty whenever `MILL_BIND` is anything but loopback. The write paths
+  are a kill switch and a worktree deleter, and the log endpoint streams repo contents
+- the board's `Status` field carries every option mill writes — `Running`, `Blocked`, `Done` and
+  `Failed`. A missing one fails at the moment it matters, when a run blocks or finishes, rather
+  than at setup
 - the permission ruleset files in `~/.mill/settings/` exist and carry every deny rule the design
   doc requires, **with no absolute paths and no `Write(...)` rules**, and put no confinement in
   an `allow` list — each of those three is accepted silently and enforces nothing
