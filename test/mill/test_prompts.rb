@@ -10,6 +10,34 @@ module Mill
 			end
 		end
 
+		# A prompt is wrapped prose, so a phrase worth asserting on will usually
+		# straddle a line break. Compare against the text with its whitespace
+		# collapsed rather than writing the assertion around the wrapping, which
+		# breaks the moment anyone rewraps a paragraph.
+		def flowed(stage, **context) = prompt(stage, **context).gsub(/\s+/, ' ')
+
+		# triage judges three things and nothing else. An opener telling it to block
+		# whenever "the answer" is not obvious, followed by a closed list, tells it
+		# two different things — and the widest reading is the one that costs a
+		# round trip on a spec only `plan` could have judged.
+		def test_triage_is_told_exactly_what_it_judges
+			body = flowed('triage', issue: 'x')
+
+			assert_includes body, 'scope, route, and whether the spec is buildable at all'
+			assert_includes body, 'Nothing else here is yours to judge'
+		end
+
+		# The bar is deliberately high. A spec failing one or two of the three
+		# belongs to `plan`, which reads the code and asks in one batch — splitting
+		# the question list makes a human answer twice.
+		def test_triage_blocks_only_on_a_spec_that_is_unbuildable
+			body = flowed('triage', issue: 'x')
+
+			assert_includes body, 'block only when the spec fails *all three* of these together'
+			assert_includes body, 'A spec that fails one or two of those is not yours'
+			assert_includes body, 'makes a human answer twice'
+		end
+
 		# Claude Code never has to guess which skill to load — the quickstart warns
 		# about exactly that guessing.
 		def test_a_stage_prompt_names_its_own_skill
