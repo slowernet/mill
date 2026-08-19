@@ -62,6 +62,32 @@ module Mill
 			}
 		end
 
+		# Where the platform keeps its CA bundle, first one that exists.
+		CA_BUNDLES = %w[
+			/etc/ssl/cert.pem
+			/etc/ssl/certs/ca-certificates.crt
+			/etc/pki/tls/certs/ca-bundle.crt
+		].freeze
+
+		def self.ca_bundle = CA_BUNDLES.find { |path| File.exist?(path) }
+
+		# The environment every stage runs with. Plan 3 adds the scoped GH_TOKEN and
+		# the per-repo secrets here; this is the hook they hang from.
+		#
+		# SSL_CERT_FILE is set for the benefit of anything a stage runs that reads
+		# a CA file — and **not** for `gh`, which it does not fix. Measured across
+		# two resumed attempts on 2026-08-19: inside the Bash sandbox `curl` and
+		# `git push` both reach api.github.com over the allowlist, while `gh` fails
+		# with `x509: OSStatus -26276`. That is Go on macOS calling SecTrustEvaluate
+		# through the Security framework, which the sandbox blocks; Go ignores
+		# SSL_CERT_FILE on this platform, and `GODEBUG=x509usefallbackroots=1` was
+		# probed directly and made no difference either. The fix is architectural,
+		# not environmental — see the pr stage.
+		def self.env_for(_stage)
+			bundle = ca_bundle
+			bundle ? { 'SSL_CERT_FILE' => bundle } : {}
+		end
+
 		def self.write!(home: Mill.home)
 			dir = File.join(home, 'settings')
 			FileUtils.mkdir_p(dir)

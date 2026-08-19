@@ -8,7 +8,8 @@ module Mill
 
 		def self.for(stage, context = {})
 			config = Mill::Stages[stage]		# raises on an unknown stage
-			[preamble(stage, config), render(template(Mill::Stages.slug(stage)), context)].join("\n\n")
+			[preamble(stage, config, context), render(template(Mill::Stages.slug(stage)), context)]
+				.join("\n\n")
 		end
 
 		def self.template(slug)
@@ -22,12 +23,15 @@ module Mill
 		# tells a stage to hunt for skills before doing anything, and a stage
 		# holding no Skill tool reads that as an attack, says so, and spends tokens
 		# on it — measured on a real triage launch, 2026-08-19.
-		def self.preamble(stage, config)
+		# Answers live here rather than in a stage template because any stage can
+		# block, and a resumed stage must see the reply wherever it happens to be.
+		def self.preamble(stage, config, context = {})
 			skill = config[:skill]
-			render(template('_preamble'),
+			render(template('_preamble'), context.merge(
 				stage: stage,
 				skill_line: skill ? "Load exactly one skill: `#{skill}`. Do not load any other." :
-					'This stage loads no skill. Do not go looking for one.')
+					'This stage loads no skill. Do not go looking for one.'
+			))
 		end
 
 		# Deliberately not ERB or format(): a prompt is prose with braces and

@@ -52,6 +52,18 @@ module Mill
 		# The block, if given, is called with (stage, number, resuming) as each
 		# launch starts — which is what `rake mill:run` prints. It wraps the real
 		# launcher rather than replacing it, so watching a run cannot change it.
+		# Answering a blocked run. Nothing restarts: the blocked stage resumes its
+		# own session with the answers injected, and the route carries on from
+		# there. Plan 3 triggers this from a comment; by hand it is rake mill:answer.
+		def self.resume(run_id, answers, db: Mill.db, claude: Mill::Claude, &announce)
+			row = db[:runs].where(id: run_id).first or raise Mill::Error, "no run #{run_id}"
+			repo = db[:repos].where(id: row[:repo_id]).first
+
+			run = allocate
+			run.send(:initialize_resumed, row, repo, db, claude, Array(answers))
+			run.call(&announce)
+		end
+
 		def call(launcher: nil, &announce)
 			raise Mill::Error, 'call prepare first' unless prepared?
 
@@ -59,9 +71,13 @@ module Mill
 		end
 
 		def runner(launcher: nil, &announce)
-			@runner ||= Mill::Runner.new(db: @db, run_id: @run_id,
-				launcher: launcher || default_launcher(&announce),
-				context: { issue: issue_body, spec_path: @spec_path, branch: @branch, base: base })
+			@runner ||= begin
+				r = Mill::Runner.new(db: @db, run_id: @run_id,
+					launcher: launcher || default_launcher(&announce),
+					context: { issue: issue_body, spec_path: @spec_path, branch: @branch, base: base,
+						answers: @answers })
+				@resumed ? r.restore : r
+			end
 		end
 
 		def attempts = @db[:stage_attempts].where(run_id: @run_id).order(:id).all
@@ -73,6 +89,28 @@ module Mill
 		end
 
 		private
+
+		# A resumed run already knows its branch, spec, and worktree — they are
+		# columns. Nothing is re-resolved, so answering cannot pick a different
+		# branch than the one the run has been working on.
+		def initialize_resumed(row, repo, db, claude, answers)
+			@db = db
+			@claude = claude
+			@git = Mill::Git
+			@run_id = row[:id]
+			@branch = row[:branch]
+			@spec_path = row[:spec_path]
+			@worktree = row[:worktree_path]
+			@base = repo[:base_branch]
+			@clone = repo[:local_path]
+			@owner = repo[:owner]
+			@name = repo[:name]
+			@number = row[:subject_number]
+			@repo = "#{repo[:owner]}/#{repo[:name]}"
+			@answers = answers
+			@questions = []
+			@resumed = true
+		end
 
 		def fail_with(problem, questions)
 			@problem = problem
@@ -95,7 +133,13 @@ module Mill
 			@db[:runs].where(id: @run_id).update(worktree_path: @worktree)
 		end
 
-		def issue_body = @issue_body ||= @github.issue(@repo, @number)[:body].to_s
+		def issue_body
+			@issue_body ||= (@github || Mill::Github.new).issue(@repo, @number)[:body].to_s
+		rescue Mill::Github::Error => e
+			# A resumed run should not die because GitHub is briefly unreachable;
+			# the issue body is context, not the thing being worked on.
+			"(mill could not re-read the issue: #{e.message})"
+		end
 
 		def default_launcher(&announce)
 			lambda do |stage:, prompt:, number:, session_id:|
@@ -103,7 +147,7 @@ module Mill
 				log = File.join(Mill.home, 'logs', @run_id.to_s,
 					"#{Mill::Stages.slug(stage)}-#{number}.jsonl")
 				@claude.new(stage).run(prompt, number: number, worktree: @worktree,
-					log_path: log, session_id: session_id)
+					log_path: log, session_id: session_id, env: Mill::Rules.env_for(stage))
 			end
 		end
 	end

@@ -78,6 +78,27 @@ namespace :mill do
 		exit 1 unless outcome == :done
 	end
 
+	desc 'Answer a blocked run and resume it: mill:answer[2,"your answer"]'
+	task :answer, %i[run answers] do |_t, args|
+		require_relative 'lib/mill'
+		abort 'usage: rake \'mill:answer[2,"your answer"]\'' unless args[:run] && args[:answers]
+
+		answers = [args[:answers], *args.extras]
+		puts "resuming run #{args[:run]} with #{answers.length} answer(s)\n\n"
+		outcome = Mill::Run.resume(args[:run].to_i, answers) do |stage, number, resuming|
+			puts "-> #{stage} (attempt #{number})#{resuming ? ' resuming' : ' fresh'}"
+		end
+
+		run = Mill.db[:runs].where(id: args[:run].to_i).first
+		puts "\n#{outcome}"
+		Mill.db[:stage_attempts].where(run_id: args[:run].to_i).order(:id).each do |a|
+			puts format('  %-16s #%d  %-16s %s%s', a[:stage], a[:number], a[:status],
+				a[:strike_charged] ? 'STRIKE ' : '', a[:struck_stage] ? "struck #{a[:struck_stage]}" : '')
+		end
+		puts "pr: #{run[:pr_number]}" if run[:pr_number]
+		exit 1 unless outcome == :done
+	end
+
 	desc 'Spawn one real claude stage and report its verdict and token usage'
 	task :probe, %i[stage] do |_t, args|
 		require_relative 'lib/mill'

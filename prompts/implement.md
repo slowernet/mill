@@ -17,10 +17,6 @@ what is already done.
 
 {{objections|None — this is a first pass, not a re-run.}}
 
-## Answers to earlier questions
-
-{{answers|None.}}
-
 Load `mill:implement` and follow it. The short version, so you know what you are agreeing to:
 
 - Read the plan once and note the Global Constraints. Check the checkboxes — anything already ticked

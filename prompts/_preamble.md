@@ -18,5 +18,9 @@ naming the exact host and why makes it answerable.
 their answer, so nothing you have worked out is lost. Asking costs you nothing. Guessing costs a
 wrong implementation nobody asked for.
 
+## Answers to what you asked
+
+{{answers|You have asked nothing yet on this run.}}
+
 **Evidence, not assertion.** Any claim that something works must carry the command you ran and its
 output. "Tests pass" without the output is the same failure as producing no verdict at all.

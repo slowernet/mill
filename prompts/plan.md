@@ -12,10 +12,6 @@ Read it in full: `{{spec_path}}`
 
 {{issue}}
 
-## Answers to earlier questions
-
-{{answers|None — this is the first launch of this stage.}}
-
 ## Reviewer objections to address
 
 {{objections|None.}}

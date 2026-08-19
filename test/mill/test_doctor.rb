@@ -212,6 +212,17 @@ module Mill
 			end
 		end
 
+		# For tools that read a CA file. Not for gh: Go on macOS ignores this and
+		# calls SecTrustEvaluate, which the sandbox blocks.
+		def test_every_stage_is_given_a_ca_bundle
+			skip 'no CA bundle on this platform' unless Mill::Rules.ca_bundle
+
+			Mill::Stages.names.each do |stage|
+				assert_path_exists Mill::Rules.env_for(stage)['SSL_CERT_FILE'],
+					"#{stage} has no usable CA bundle"
+			end
+		end
+
 		# An empty check list makes `all?` true, so an unrun doctor reported the
 		# machine green — in a codebase whose fourth principle is fail closed.
 		def test_an_unrun_doctor_is_not_ok

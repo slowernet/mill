@@ -35,6 +35,27 @@ module Mill
 		# needs a query and a Runner may be built and never stepped.
 		def stage = @stage ||= route_stages.first
 
+		# Rebuilds what the first walk knew, from the rows it left behind: which
+		# session each stage is holding, what the plan produced, what each stage
+		# reported, and which stage was waiting for an answer.
+		#
+		# Answering does not restart anything. The blocked stage resumes its own
+		# session with the answer injected, so it wakes up remembering its own work
+		# — which is the whole reason the session id is a column.
+		def restore
+			raise Mill::Error, "run #{@run_id} is not blocked" unless run_row[:status] == 'blocked'
+
+			@db[:stage_attempts].where(run_id: @run_id).order(:id).each do |row|
+				verdict = row[:verdict_json] ? JSON.parse(row[:verdict_json], symbolize_names: true) : {}
+				@sessions[row[:stage]] = row[:session_id]
+				@artifacts[row[:stage]] = verdict[:artifact] if verdict[:artifact]
+				@verdicts << { stage: row[:stage], status: verdict[:status], summary: verdict[:summary] }
+			end
+			@stage = run_row[:current_stage] || route_stages.first
+			rescue_from_strikes
+			self
+		end
+
 		def call
 			outcome = nil
 			outcome = step until TERMINAL.include?(outcome)
@@ -43,6 +64,7 @@ module Mill
 
 		def step
 			return finish if stage.nil?
+			return terminate("#{@stage} ran out of strikes twice") if @exhausted
 
 			tally = @ledger.tally(@stage)
 			return halt(:blocked, "#{@stage} has used both its strikes") if tally.out_of_strikes?
@@ -52,6 +74,22 @@ module Mill
 		end
 
 		private
+
+		def run_row = @db[:runs].where(id: @run_id).first
+
+		# The one sanctioned third strike. A run blocked because a stage ran out of
+		# strikes resumes differently from one blocked by a question: answering
+		# resets that stage's count, once per run. A stage that runs out a second
+		# time is terminal, and the run fails rather than looping.
+		def rescue_from_strikes
+			return unless @ledger.out_of_strikes?(@stage)
+
+			if @ledger.reset_available?(@stage)
+				@ledger.reset!(@stage)
+			else
+				@exhausted = true
+			end
+		end
 
 		def launch(stage, number)
 			@launcher.call(
@@ -138,6 +176,14 @@ module Mill
 			@state = { stage: @stage, status: status, reason: reason, questions: questions }
 			@db[:runs].where(id: @run_id).update(status: status.to_s, current_stage: @stage)
 			status
+		end
+
+		# The only path to a terminal failure: a stage that exhausted its strikes,
+		# was rescued once, and exhausted them again.
+		def terminate(reason)
+			@state = { stage: @stage, status: :failed, reason: reason, questions: [] }
+			@db[:runs].where(id: @run_id).update(status: 'failed', finished_at: Mill.now)
+			:failed
 		end
 
 		def finish
