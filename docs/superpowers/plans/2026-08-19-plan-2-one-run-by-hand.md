@@ -79,7 +79,7 @@ pushes branches under their account.
   `gh issue develop`, and a spec committed on that branch under `docs/superpowers/specs/`. Task 9
   runs against exactly this.
 
-- [ ] **Step 1: Write the runbook section**
+- [x] **Step 1: Write the runbook section**
 
 Append to `docs/reference/setup.md`, and add `- [11. A scratch repo for rehearsals](#11-a-scratch-repo-for-rehearsals)` to the Contents list:
 
@@ -219,19 +219,19 @@ git push origin --delete <branch> 2>/dev/null || true
 ```
 ````
 
-- [ ] **Step 2: Check the Contents list and cross-reference**
+- [x] **Step 2: Check the Contents list and cross-reference**
 
 Run: `grep -n '^- \[1[01]\.' docs/reference/setup.md`
 Expected: both `[10. Verify]` and `[11. A scratch repo for rehearsals]` present, in order.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/reference/setup.md
 git commit -m "Runbook: the scratch repo Plan 2 rehearses against"
 ```
 
-- [ ] **Step 4: Stop and hand over**
+- [x] **Step 4: Stop and hand over**
 
 Tell the operator this section is ready and that Task 9 cannot run until they have worked through
 it. Continue with Tasks 2–8, none of which need the repo to exist.
@@ -261,7 +261,7 @@ rather than aspirational. Plan 2 needs three of its methods; Plan 3 grows the re
     clone or any of its worktrees
   - `Mill::Git.current_branch(repo_path)` → String or nil
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `test/mill/test_git.rb`:
 
@@ -380,12 +380,12 @@ module Mill
 end
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_git.rb`
 Expected: FAIL with `uninitialized constant Mill::Git`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `lib/mill/git.rb`:
 
@@ -458,17 +458,17 @@ Add to `lib/mill.rb`, immediately after `require_relative 'mill/github'`:
 require_relative 'mill/git'
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_git.rb`
 Expected: PASS, 8 runs, 0 failures
 
-- [ ] **Step 5: Run the full suite**
+- [x] **Step 5: Run the full suite**
 
 Run: `bundle exec rake test`
 Expected: 0 failures, 0 errors
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add lib/mill/git.rb lib/mill.rb test/mill/test_git.rb
@@ -496,7 +496,7 @@ Exactly one file is the spec: none routes to `fast` or blocks, more than one blo
   `found?`, `blocked?`. `problem` is one of `nil`, `:no_branch`, `:many_branches`, `:no_spec`,
   `:many_specs`, `:branch_checked_out`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `test/mill/test_spec.rb`:
 
@@ -596,12 +596,12 @@ module Mill
 end
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_spec.rb`
 Expected: FAIL with `uninitialized constant Mill::Spec`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `lib/mill/spec.rb`:
 
@@ -666,12 +666,12 @@ Add to `lib/mill.rb`, immediately after `require_relative 'mill/git'`:
 require_relative 'mill/spec'
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_spec.rb`
 Expected: PASS, 7 runs, 0 failures
 
-- [ ] **Step 5: Run the full suite and commit**
+- [x] **Step 5: Run the full suite and commit**
 
 Run: `bundle exec rake test`
 Expected: 0 failures, 0 errors
@@ -717,7 +717,7 @@ The invocation the reviewed stage owes is its re-launch, which happens next and 
     reviewed)` — one row, one launch, the strike attributed to someone else
   - Constants `MAX_STRIKES = 2`, `MAX_INVOCATIONS = 8`, `MAX_INTERRUPTIONS = 3`
 
-- [ ] **Step 1: Write the migration**
+- [x] **Step 1: Write the migration**
 
 Create `db/migrations/003_a_rejection_strikes_the_stage_it_reviewed.rb`:
 
@@ -739,7 +739,7 @@ end
 
 Run: `bundle exec rake test` — the existing schema test must still pass.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Create `test/mill/test_ledger.rb`:
 
@@ -956,12 +956,12 @@ module Mill
 end
 ```
 
-- [ ] **Step 6: Run the test to verify it fails**
+- [x] **Step 6: Run the test to verify it fails**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_ledger.rb`
 Expected: FAIL with `uninitialized constant Mill::Ledger`
 
-- [ ] **Step 4: Write the implementation**
+- [x] **Step 4: Write the implementation**
 
 Create `lib/mill/ledger.rb`:
 
@@ -1088,7 +1088,7 @@ Add to `lib/mill.rb`, immediately after `require_relative 'mill/spec'`:
 require_relative 'mill/ledger'
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_ledger.rb`
 Expected: PASS, 21 runs, 0 failures
@@ -1097,7 +1097,7 @@ If `test_a_reviewer_that_crashes_then_reviews_twice` fails on the unique index o
 `(run_id, stage, invocation)`, the bug is that `charge` computed the invocation number twice for one
 launch — pass it explicitly from the runner rather than recomputing.
 
-- [ ] **Step 6: Run the full suite and commit**
+- [x] **Step 6: Run the full suite and commit**
 
 Run: `bundle exec rake test`
 
@@ -1135,7 +1135,7 @@ actually loads.
   Hashes), `:objections` (Array of Hashes), `:answers` (Array of Strings), `:test_command`. Missing
   keys render as an explicit "not applicable on this route" line, never as an empty placeholder.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `test/mill/test_prompts.rb`:
 
@@ -1237,12 +1237,12 @@ module Mill
 end
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_prompts.rb`
 Expected: FAIL with `uninitialized constant Mill::Prompts`
 
-- [ ] **Step 3: Write the loader**
+- [x] **Step 3: Write the loader**
 
 Create `lib/mill/prompts.rb`:
 
@@ -1311,7 +1311,7 @@ Add to `lib/mill.rb`, immediately after `require_relative 'mill/ledger'`:
 require_relative 'mill/prompts'
 ```
 
-- [ ] **Step 4: Write the preamble template**
+- [x] **Step 4: Write the preamble template**
 
 Create `prompts/_preamble.md`:
 
@@ -1332,7 +1332,7 @@ their answer. Asking costs you nothing. Guessing costs a wrong implementation no
 output. "Tests pass" without the output is the same failure as producing no verdict at all.
 ```
 
-- [ ] **Step 5: Write the six stage templates**
+- [x] **Step 5: Write the six stage templates**
 
 Create `prompts/triage.md`:
 
@@ -1585,12 +1585,12 @@ which is idempotent — so if you crash between creating the PR and mill recordi
 instead of opening a second one.
 ```
 
-- [ ] **Step 6: Run the test to verify it passes**
+- [x] **Step 6: Run the test to verify it passes**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_prompts.rb`
 Expected: PASS, 12 runs, 0 failures
 
-- [ ] **Step 7: Run the full suite and commit**
+- [x] **Step 7: Run the full suite and commit**
 
 ```bash
 git add prompts/ lib/mill/prompts.rb lib/mill.rb test/mill/test_prompts.rb
@@ -1624,7 +1624,7 @@ worktree so no stage can edit the instructions it runs under.
   *enabled* plugin.
 - Produces: `mill:implement` and `mill:pr` resolvable, so `Mill::Doctor` goes green on them.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `test/mill/test_own_skills.rb`:
 
@@ -1709,12 +1709,12 @@ module Mill
 end
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_own_skills.rb`
 Expected: FAIL with `No such file or directory ... plugin/.claude-plugin/plugin.json`
 
-- [ ] **Step 3: Write the plugin manifest and the marketplace**
+- [x] **Step 3: Write the plugin manifest and the marketplace**
 
 Create `plugin/.claude-plugin/plugin.json`:
 
@@ -1738,7 +1738,7 @@ Create `.claude-plugin/marketplace.json` at the repo root:
 }
 ```
 
-- [ ] **Step 4: Write `plugin/skills/mill-headless/SKILL.md`**
+- [x] **Step 4: Write `plugin/skills/mill-headless/SKILL.md`**
 
 ```markdown
 ---
@@ -1795,7 +1795,7 @@ Blocking is free and always correct when you genuinely cannot proceed. It is not
 a way to avoid committing to a judgment you were asked to make.
 ```
 
-- [ ] **Step 5: Write `plugin/skills/implement/SKILL.md`**
+- [x] **Step 5: Write `plugin/skills/implement/SKILL.md`**
 
 ```markdown
 ---
@@ -1892,7 +1892,7 @@ a second retry ledger mill cannot see would corrupt the first), opening a pull r
 stage, after review), and choosing models (mill's stage table).
 ```
 
-- [ ] **Step 6: Write `plugin/skills/pr/SKILL.md`**
+- [x] **Step 6: Write `plugin/skills/pr/SKILL.md`**
 
 ```markdown
 ---
@@ -1957,7 +1957,7 @@ creating the pull request and mill recording it, mill reconciles instead of open
 Reporting it would make that reconciliation a guess.
 ```
 
-- [ ] **Step 7: Add the enabling step to the runbook**
+- [x] **Step 7: Add the enabling step to the runbook**
 
 Append to section 6 of `docs/reference/setup.md`:
 
@@ -1978,12 +1978,12 @@ the plugin is installed but not enabled — `claude plugin enable mill` — or t
 wrong.
 ````
 
-- [ ] **Step 8: Run the test to verify it passes**
+- [x] **Step 8: Run the test to verify it passes**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_own_skills.rb`
 Expected: PASS, 8 runs, 0 failures
 
-- [ ] **Step 9: Run the full suite and commit**
+- [x] **Step 9: Run the full suite and commit**
 
 ```bash
 git add plugin/ .claude-plugin/ docs/reference/setup.md test/mill/test_own_skills.rb
@@ -2015,7 +2015,7 @@ lets the whole control plane be tested with no network and no `claude`.
   - The launcher is called as `launcher.call(stage:, prompt:, invocation:, session_id:)` and must
     return an object shaped like `Mill::Claude::Attempt`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `test/mill/test_runner.rb`:
 
@@ -2263,12 +2263,12 @@ module Mill
 end
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_runner.rb`
 Expected: FAIL with `uninitialized constant Mill::Runner`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `lib/mill/runner.rb`:
 
@@ -2420,7 +2420,7 @@ Add to `lib/mill.rb`, immediately after `require_relative 'mill/prompts'`:
 require_relative 'mill/runner'
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_runner.rb`
 Expected: PASS, 17 runs, 0 failures
@@ -2431,7 +2431,7 @@ implementation below already orders them that way in `step`; if you reorder them
 matches zero rows and every attempt loses its session id, which then breaks resume rather than
 failing loudly.
 
-- [ ] **Step 5: Run the full suite and commit**
+- [x] **Step 5: Run the full suite and commit**
 
 ```bash
 git add lib/mill/runner.rb lib/mill.rb test/mill/test_runner.rb
@@ -2456,7 +2456,7 @@ creates the worktree, and walks the route with the real launcher.
   `Mill::Git.worktree_remove(repo_path, tree_path)`; the rake task
   `mill:run[repo,number,clone_path]`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `test/mill/test_git.rb`, inside the class:
 
@@ -2487,12 +2487,12 @@ Append to `test/mill/test_git.rb`, inside the class:
 		end
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_git.rb`
 Expected: FAIL with `undefined method 'worktree_add'`
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Add to `lib/mill/git.rb`, inside `module Git`:
 
@@ -2512,12 +2512,12 @@ Add to `lib/mill/git.rb`, inside `module Git`:
 
 Add `require 'fileutils'` to the top of `lib/mill/git.rb`.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_git.rb`
 Expected: PASS, 10 runs, 0 failures
 
-- [ ] **Step 5: Add the rake task**
+- [x] **Step 5: Add the rake task**
 
 Add to `Rakefile`, inside `namespace :mill do`:
 
@@ -2583,12 +2583,12 @@ Add to `Rakefile`, inside `namespace :mill do`:
 	end
 ```
 
-- [ ] **Step 6: Verify the task loads and refuses bad input**
+- [x] **Step 6: Verify the task loads and refuses bad input**
 
 Run: `bundle exec rake 'mill:run[]' 2>&1 | head -2`
 Expected: `usage: rake "mill:run[owner/repo,42,~/code/repo]"`
 
-- [ ] **Step 7: Run the full suite and commit**
+- [x] **Step 7: Run the full suite and commit**
 
 ```bash
 git add Rakefile lib/mill/git.rb test/mill/test_git.rb
