@@ -5,8 +5,15 @@ module Mill
 	#
 	# Thread.report_on_exception stays at its default of true.
 	class Workers
-		DEFAULT_INTERVAL = 30
+		# The board is a queue you touch by hand. A minute costs nothing in
+		# responsiveness and halves what mill spends against the GraphQL budget,
+		# which is measured in points rather than calls and which one board read
+		# per tick can consume a real share of.
+		DEFAULT_INTERVAL = 60
 		MAX_BACKOFF = 300
+		# A rate-limit window can be most of an hour away. Capped so a clock that
+		# disagrees with GitHub's cannot park a worker thread indefinitely.
+		MAX_RATE_LIMIT_WAIT = 3600
 
 		attr_reader :supervisor, :board
 
@@ -23,8 +30,9 @@ module Mill
 			# is a silent no-op — mill runs perfectly and never writes a Status, so
 			# the board sits on Ready while a run works, finishes and opens a pull
 			# request. Measured on the first real poll, 2026-08-19.
-			@board = Mill::Board.new(db: db)
-			@supervisor = Mill::Supervisor.new(db: db, board: @board)
+			@github = Mill::Github.new
+			@board = Mill::Board.new(db: db, github: @github)
+			@supervisor = Mill::Supervisor.new(db: db, github: @github, board: @board)
 			@poller_tick = poller
 			@supervisor_tick = supervisor
 			# Not `.to_f`: an empty or unparseable MILL_POLL_SECONDS would become 0.0
@@ -73,7 +81,8 @@ module Mill
 
 		def poller_tick
 			@poller_tick || begin
-				poller = Mill::Poller.new(db: @db, supervisor: @supervisor, board: @board)
+				poller = Mill::Poller.new(db: @db, supervisor: @supervisor, board: @board,
+					github: @github)
 				-> { poller.tick }
 			end
 		end
@@ -93,7 +102,7 @@ module Mill
 						failures += 1
 						beat(name, "#{e.class}: #{e.message}")
 						warn "#{name} raised: #{e.class}: #{e.message}"
-						sleep backoff(failures)
+						sleep backoff(failures, e)
 					end
 				end
 			end
@@ -102,7 +111,26 @@ module Mill
 		# The cap is in seconds, and applying it before the multiplier would make
 		# the real ceiling three seconds rather than five minutes. An expired token
 		# would then retry twelve hundred times an hour, indefinitely.
-		def backoff(failures) = [@interval * (2**failures), MAX_BACKOFF].min
+		def backoff(failures, error = nil)
+			return rate_limit_wait if error.is_a?(Mill::Github::RateLimited)
+
+			[@interval * (2**failures), MAX_BACKOFF].min
+		end
+
+		# A rate limit is the one failure that says exactly when to try again, so
+		# guessing at it is strictly worse. Exponential backoff caps at five
+		# minutes; a GraphQL window can be forty away, which is eight more attempts
+		# that fail for a reason already known. The design says a rate-limited
+		# stage is waiting rather than working — this is the same rule for mill's
+		# own API access.
+		#
+		# Never shorter than one tick, in case the reset has just passed, and never
+		# longer than an hour, in case the clocks disagree.
+		def rate_limit_wait
+			reset = @github.rate_limit_reset or return MAX_BACKOFF
+
+			[[reset - Mill.now, @interval].max, MAX_RATE_LIMIT_WAIT].min
+		end
 
 		# @beats is written from two worker threads and read from a Puma thread.
 		# Replacing the hash rather than mutating it means a reader never sees it

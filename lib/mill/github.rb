@@ -38,6 +38,17 @@ module Mill
 				'number,title,body,state,author,comments,url')
 		end
 
+		# When the window reopens, as a UTC epoch second. The rate_limit endpoint is
+		# itself exempt, so asking costs nothing — which is what makes waiting for
+		# the reset a better answer than backing off blindly into a closed window.
+		# nil means mill could not find out, and the caller must fall back rather
+		# than treat it as "reopens now".
+		def rate_limit_reset(resource = :graphql)
+			json('api', 'rate_limit')&.dig(:resources, resource.to_sym, :reset)
+		rescue Error
+			nil
+		end
+
 		def project_id(project, owner:)
 			json('project', 'view', project.to_s, '--owner', owner, '--format', 'json')[:id]
 		end

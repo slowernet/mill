@@ -102,6 +102,55 @@ module Mill
 			assert_operator w.send(:backoff, 20), :>, 60
 		end
 
+		# A rate limit is the one failure that says exactly when to try again.
+		# Exponential backoff caps at five minutes; a GraphQL window can be forty
+		# away, so backing off means eight more attempts that fail for a reason
+		# mill already knows.
+		def test_a_rate_limit_waits_for_the_window_rather_than_backing_off
+			w = workers(interval: 60)
+			reset = Mill.now + 1800
+			w.instance_variable_set(:@github, stub_github(reset))
+
+			assert_in_delta 1800, w.send(:backoff, 1, Mill::Github::RateLimited.new('nope')), 5
+		end
+
+		def test_a_rate_limit_whose_reset_is_unknown_falls_back
+			w = workers(interval: 60)
+			w.instance_variable_set(:@github, stub_github(nil))
+
+			assert_equal Mill::Workers::MAX_BACKOFF,
+				w.send(:backoff, 1, Mill::Github::RateLimited.new('nope'))
+		end
+
+		# A reset that has just passed must still leave a tick between attempts,
+		# and a clock that disagrees with GitHub's must not park the thread.
+		def test_the_rate_limit_wait_is_bounded_at_both_ends
+			w = workers(interval: 60)
+
+			w.instance_variable_set(:@github, stub_github(Mill.now - 500))
+
+			assert_equal 60, w.send(:backoff, 1, Mill::Github::RateLimited.new('nope'))
+
+			w.instance_variable_set(:@github, stub_github(Mill.now + 999_999))
+
+			assert_equal Mill::Workers::MAX_RATE_LIMIT_WAIT,
+				w.send(:backoff, 1, Mill::Github::RateLimited.new('nope'))
+		end
+
+		def test_any_other_failure_still_backs_off_exponentially
+			w = workers(interval: 30)
+
+			assert_in_delta 60, w.send(:backoff, 1, Mill::Error.new('boom'))
+		end
+
+		def stub_github(reset)
+			Object.new.tap { |g| g.define_singleton_method(:rate_limit_reset) { |*| reset } }
+		end
+
+		def test_the_default_interval_is_a_minute
+			assert_equal 60, Mill::Workers::DEFAULT_INTERVAL
+		end
+
 		def test_the_root_route_reports_worker_health
 			get '/'
 
