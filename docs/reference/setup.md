@@ -23,6 +23,7 @@ running it over trusting this document — it checks reality.
 - [8. Per-repo secrets](#8-per-repo-secrets)
 - [9. Server deployment (optional)](#9-server-deployment-optional)
 - [10. Verify](#10-verify)
+- [11. A scratch repo for rehearsals](#11-a-scratch-repo-for-rehearsals)
 
 ## 1. Two tokens, two jobs
 
@@ -268,3 +269,140 @@ It checks, and names anything missing:
 
 Treat a red doctor as a blocker. Most of what it checks is critical to containment rather than
 a convenience.
+
+## 11. A scratch repo for rehearsals
+
+mill pushes real branches and opens real pull requests, so building it needs a target nobody cares
+about. The same scenario gets run many times, so it has to be disposable — reset it after every
+rehearsal rather than accumulating state you then have to reason about.
+
+```
+gh repo create slowernet/mill-scratch --private --clone
+cd mill-scratch
+```
+
+It needs enough structure to plan against — a test suite that really runs, and files with actual
+shape rather than placeholders:
+
+```
+mkdir -p lib test .github/workflows docs/superpowers/specs
+
+cat > Gemfile <<'RUBY'
+source 'https://rubygems.org'
+gem 'minitest'
+gem 'rake'
+RUBY
+
+cat > Rakefile <<'RUBY'
+require 'rake/testtask'
+Rake::TestTask.new(:test) do |t|
+	t.libs << 'lib' << 'test'
+	t.test_files = FileList['test/**/test_*.rb']
+end
+task default: :test
+RUBY
+
+cat > lib/inventory.rb <<'RUBY'
+# A deliberately small domain with room for a feature to be added to it.
+class Inventory
+	Item = Struct.new(:sku, :name, :count, keyword_init: true)
+
+	def initialize = @items = {}
+
+	def add(sku:, name:, count: 0)
+		@items[sku] = Item.new(sku: sku, name: name, count: count)
+	end
+
+	def count(sku) = @items[sku]&.count || 0
+
+	def restock(sku, by:)
+		item = @items[sku] or raise KeyError, "no such sku: #{sku}"
+		item.count += by
+	end
+end
+RUBY
+
+cat > test/test_inventory.rb <<'RUBY'
+require 'minitest/autorun'
+require 'inventory'
+
+class TestInventory < Minitest::Test
+	def setup = @inventory = Inventory.new
+
+	def test_an_added_item_can_be_counted
+		@inventory.add(sku: 'A1', name: 'Widget', count: 3)
+		assert_equal 3, @inventory.count('A1')
+	end
+
+	def test_an_unknown_sku_counts_zero
+		assert_equal 0, @inventory.count('nope')
+	end
+
+	def test_restocking_raises_for_an_unknown_sku
+		assert_raises(KeyError) { @inventory.restock('nope', by: 1) }
+	end
+end
+RUBY
+
+cat > .github/workflows/ci.yml <<'YAML'
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - run: bundle exec rake test
+YAML
+
+cat > .mill.yml <<'YAML'
+base_branch: main
+test_command: bundle exec rake test
+ci_workflow: ci.yml
+trusted_authors:
+  - dependabot[bot]
+evidence_public: false
+secrets: []
+YAML
+
+git add -A && git commit -m "Scaffold the scratch repo" && git push -u origin main
+```
+
+The CI job is named `test`, which is the name branch protection must require. Set that up with
+section 7's command, using `contexts: ["test"]`.
+
+### The rehearsal fixture
+
+mill's `plan` route starts from an issue with a spec on a linked branch, so create one:
+
+```
+gh issue create --repo slowernet/mill-scratch \
+  --title 'Track low-stock items' --body-file - <<'MD'
+Inventory has no way to answer "what needs reordering?". See the spec on the linked branch.
+MD
+
+gh issue develop <number> --repo slowernet/mill-scratch --checkout
+```
+
+Write the spec on that branch to the standard in `docs/reference/spec-standard.md`, commit it, and
+push. Then **switch your clone off the branch** — `git worktree add` refuses a branch that is
+checked out anywhere, including your clone's own HEAD, and mill blocks rather than forcing it:
+
+```
+git add docs/superpowers/specs/ && git commit -m "Spec: track low-stock items" && git push
+git switch main
+```
+
+### Resetting between rehearsals
+
+Delete the pull request and the branch, then re-run `gh issue develop`:
+
+```
+gh pr close <pr> --repo slowernet/mill-scratch --delete-branch
+git push origin --delete <branch> 2>/dev/null || true
+git worktree prune
+```
