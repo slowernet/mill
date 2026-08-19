@@ -170,6 +170,20 @@ protection while enforcing nothing. Doctor rejects all three:
   `deny` runs anyway. Confinement lives in `--tools`, and moving it into `allow` turns the
   strongest half of layer 1 off.
 
+### mill's own plugin
+
+Two stages load skills mill owns, and they live in the mill repo so a stage cannot edit the
+instructions it runs under. They resolve only through an *enabled* plugin — installed-but-disabled
+provides nothing, and its files are still on disk, so doctor checks enablement rather than existence:
+
+```
+claude plugin marketplace add ~/code/mill
+claude plugin install mill@mill-local
+```
+
+Verify with `bundle exec rake mill:doctor`: the two `skill mill:` lines go green. If they do not, the
+plugin is installed but not enabled — `claude plugin enable mill` — or the marketplace path is wrong.
+
 ## 7. Branch protection
 
 mill's CI trigger fires on **required** checks going red, so the base branch needs branch

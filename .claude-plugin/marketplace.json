@@ -1,0 +1,7 @@
+{
+	"name": "mill-local",
+	"owner": { "name": "slowernet" },
+	"plugins": [
+		{ "source": "./plugin", "name": "mill" }
+	]
+}
