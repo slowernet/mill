@@ -22,7 +22,6 @@ module Mill
 			@verdicts = []
 			@objections = {}
 			@state = {}
-			@stage = nil
 		end
 
 		def route
@@ -32,25 +31,24 @@ module Mill
 
 		def route_stages = Mill::Stages::ROUTES.fetch(route)
 
+		# Set on first use rather than in initialize, because reading the route
+		# needs a query and a Runner may be built and never stepped.
+		def stage = @stage ||= route_stages.first
+
 		def call
-			@stage ||= route_stages.first
 			outcome = nil
 			outcome = step until TERMINAL.include?(outcome)
 			outcome
 		end
 
 		def step
-			@stage ||= route_stages.first
-			return finish if @stage.nil?
-			return halt(:blocked, "#{@stage} has used both its strikes") if @ledger.out_of_strikes?(@stage)
-			return halt(:blocked, "#{@stage} hit its invocation cap") if @ledger.out_of_invocations?(@stage)
+			return finish if stage.nil?
 
-			invocation = @ledger.next_invocation(@stage)
-			attempt = launch(@stage, invocation)
-			launched = @stage				# settle may move it before we record
-			outcome = settle(attempt, invocation)
-			record(attempt, launched, invocation)
-			outcome
+			tally = @ledger.tally(@stage)
+			return halt(:blocked, "#{@stage} has used both its strikes") if tally.out_of_strikes?
+			return halt(:blocked, "#{@stage} hit its invocation cap") if tally.out_of_invocations?
+
+			settle(launch(@stage, tally.next_invocation), tally.next_invocation)
 		end
 
 		private
@@ -72,20 +70,20 @@ module Mill
 
 			case outcome
 			when :blocked
-				@ledger.charge(stage: @stage, outcome: :blocked, invocation: invocation)
+				@ledger.charge(stage: @stage, outcome: :blocked, invocation: invocation, attempt: attempt)
 				halt(:blocked, "#{@stage} asked a question", questions: attempt.verdict.questions)
 			when :ok
 				remember(attempt)
-				reviewer?(@stage) && attempt.verdict.rejects? ? reject(attempt, invocation) : advance(invocation)
+				reviewer?(@stage) && attempt.verdict.rejects? ? reject(attempt, invocation) : advance(attempt, invocation)
 			else
-				@ledger.charge(stage: @stage, outcome: outcome, invocation: invocation)
+				@ledger.charge(stage: @stage, outcome: outcome, invocation: invocation, attempt: attempt)
 				:rerun
 			end
 		end
 
-		def advance(invocation)
+		def advance(attempt, invocation)
 			@ledger.charge(stage: @stage, outcome: reviewer?(@stage) ? :reviewed_clean : :ok,
-				invocation: invocation)
+				invocation: invocation, attempt: attempt)
 			@stage = Mill::Stages.next_stage(route, @stage)
 			@stage.nil? ? finish : :advanced
 		end
@@ -98,7 +96,7 @@ module Mill
 			reviewed = Mill::Stages.reviewed_stage(route, @stage)
 			@objections[reviewed] = attempt.verdict.serious_objections
 			@ledger.charge(stage: @stage, outcome: :reviewed_clean, invocation: invocation,
-				struck_stage: reviewed)
+				attempt: attempt, struck_stage: reviewed)
 
 			return halt(:blocked, "#{reviewed} has used both its strikes") if @ledger.out_of_strikes?(reviewed)
 
@@ -120,27 +118,6 @@ module Mill
 				objections: @objections[stage],
 				route: route
 			).compact
-		end
-
-		def record(attempt, stage, invocation)
-			@db[:stage_attempts].where(run_id: @run_id, stage: stage, invocation: invocation)
-				.update(session_id: attempt.session_id, model: attempt.model, log_path: attempt.log_path,
-					verdict_json: attempt.verdict.data.to_json, finished_at: Mill.now,
-					**token_columns(attempt))
-		end
-
-		# tokens_out stays nil when an attempt was killed before its result line:
-		# the stream carries no running output total, and nil means unmeasured.
-		# Storing 0 would make every reaped attempt read as free. The other three
-		# agree with the result line and are NOT NULL, so a missing count is 0.
-		def token_columns(attempt)
-			tokens = attempt.tokens
-			{
-				tokens_in: tokens[:tokens_in] || 0,
-				cache_creation_tokens: tokens[:cache_creation_tokens] || 0,
-				cache_read_tokens: tokens[:cache_read_tokens] || 0,
-				tokens_out: tokens[:tokens_out]
-			}
 		end
 
 		def reviewer?(stage) = stage.start_with?('review:')

@@ -64,6 +64,25 @@ module Mill
 
 		def attempts(stage) = @db[:stage_attempts].where(run_id: @run_id, stage: stage)
 
+		# Every guard the runner checks before a launch, in one pass. Asking
+		# separately meant four COUNTs per step, two of them the same query.
+		Tally = Struct.new(:invocations, :strikes, :interruptions, keyword_init: true) do
+			def out_of_strikes? = strikes >= MAX_STRIKES
+			def out_of_invocations? = invocations >= MAX_INVOCATIONS
+			def out_of_interruptions? = interruptions >= MAX_INTERRUPTIONS
+			def next_invocation = invocations + 1
+		end
+
+		def tally(stage)
+			rows = attempts(stage).select_map(%i[strike_charged status])
+			Tally.new(
+				invocations: rows.length,
+				strikes: rows.count { |charged, _| charged } +
+					@db[:stage_attempts].where(run_id: @run_id, struck_stage: stage).count,
+				interruptions: rows.count { |_, status| status == 'interrupted' }
+			)
+		end
+
 		def invocations(stage) = attempts(stage).count
 
 		# A stage is struck either by its own bad work, or by a reviewer that found
@@ -81,14 +100,19 @@ module Mill
 		# Records one launch and returns what it cost. A rejection is charged as
 		# `charge(stage: reviewer, outcome: :reviewed_clean, struck_stage: reviewed)`
 		# — one row, one launch, the strike attributed to whoever pays.
-		def charge(stage:, outcome:, invocation: nil, **columns)
+		#
+		# Everything the launch produced goes in this one insert. An earlier draft
+		# inserted here and updated the row afterwards, which meant reversing two
+		# lines in the runner silently matched zero rows: every attempt lost its
+		# session id, and resume broke rather than anything failing loudly.
+		def charge(stage:, outcome:, invocation: nil, attempt: nil, **columns)
 			cost = COST.fetch(outcome) { raise Mill::Error, "unknown outcome: #{outcome}" }
 			return cost if cost[:invocation].zero?
 
 			@db[:stage_attempts].insert(
 				run_id: @run_id, stage: stage, invocation: invocation || next_invocation(stage),
-				nonce: columns.delete(:nonce) || '', status: outcome.to_s,
-				strike_charged: cost[:strike].positive?, started_at: Mill.now, **columns
+				status: outcome.to_s, strike_charged: cost[:strike].positive?, started_at: Mill.now,
+				**attempt_columns(attempt), **columns
 			)
 			cost
 		end
@@ -117,6 +141,27 @@ module Mill
 		def resets
 			row = @db[:runs].where(id: @run_id).get(:strike_resets_json)
 			row ? JSON.parse(row) : []
+		end
+
+		private
+
+		# tokens_out stays nil when an attempt was killed before its result line:
+		# the stream carries no running output total, and nil means unmeasured.
+		# Storing 0 would make every reaped attempt read as free. The other three
+		# agree with the result line and are NOT NULL, so a missing count is 0.
+		def attempt_columns(attempt)
+			return { nonce: '' } if attempt.nil?
+
+			tokens = attempt.tokens
+			{
+				nonce: attempt.nonce.to_s, session_id: attempt.session_id, model: attempt.model,
+				log_path: attempt.log_path, verdict_json: attempt.verdict.data.to_json,
+				finished_at: Mill.now,
+				tokens_in: tokens[:tokens_in] || 0,
+				cache_creation_tokens: tokens[:cache_creation_tokens] || 0,
+				cache_read_tokens: tokens[:cache_read_tokens] || 0,
+				tokens_out: tokens[:tokens_out]
+			}
 		end
 	end
 end

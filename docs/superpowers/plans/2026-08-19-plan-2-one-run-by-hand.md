@@ -2425,11 +2425,10 @@ require_relative 'mill/runner'
 Run: `bundle exec ruby -Ilib -Itest test/mill/test_runner.rb`
 Expected: PASS, 17 runs, 0 failures
 
-One ordering trap to watch. `record` updates the `stage_attempts` row for this launch, and `settle`
-is what inserts it via `charge` — so `record` must run *after* `settle`, not before. The
-implementation below already orders them that way in `step`; if you reorder them the update silently
-matches zero rows and every attempt loses its session id, which then breaks resume rather than
-failing loudly.
+**Amended after a smell review:** the first draft had `charge` insert the row and `record` update it
+immediately afterwards. Two statements where one would do, and reversing them silently matched zero
+rows — every attempt lost its session id, and *resume* broke rather than anything failing loudly.
+`charge` now takes the attempt and inserts once; `record` is gone.
 
 - [x] **Step 5: Run the full suite and commit**
 
@@ -2446,9 +2445,15 @@ The entry point. No board, no poller: you give it a repo and an issue number, it
 creates the worktree, and walks the route with the real launcher.
 
 **Files:**
-- Modify: `Rakefile` — add the `mill:run` task
+- Create: `lib/mill/run.rb` — the entry point
+- Modify: `Rakefile` — a thin `mill:run` task over it
 - Modify: `lib/mill/git.rb` — add `worktree_add` and `worktree_remove`
-- Test: `test/mill/test_git.rb` — add worktree coverage
+- Test: `test/mill/test_run.rb`, and worktree coverage in `test/mill/test_git.rb`
+
+**Amended after a smell review:** the first draft put all sixty-odd lines in the Rakefile, where
+none of it was testable and where Plan 3's locking and concurrency would have landed on top of it.
+`Mill::Run` takes `github:`, `git:` and `claude:` the way everything else in this codebase takes its
+seams, so the whole entry point runs in a test against a tmpdir clone and a fake.
 
 **Interfaces:**
 - Consumes: everything above.

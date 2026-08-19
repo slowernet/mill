@@ -66,10 +66,22 @@ module Mill
 
 		def self.missing(name, kind, detail) = Resolved.new(name: name, kind: kind, detail: detail)
 
+		# `required` resolves five skills and each one reads settings.json and
+		# installed_plugins.json, so without this doctor reads two small files ten
+		# times. Cached on mtime rather than path alone: a plugin enabled between
+		# two doctor runs in one process must not read as still disabled.
 		def self.read_json(path)
-			JSON.parse(File.read(path), symbolize_names: true) if File.exist?(path)
-		rescue JSON::ParserError
-			nil
+			return nil unless File.exist?(path)
+
+			key = [path, File.mtime(path).to_f, File.size(path)]
+			@read_json ||= {}
+			return @read_json[key] if @read_json.key?(key)
+
+			@read_json[key] = begin
+				JSON.parse(File.read(path), symbolize_names: true)
+			rescue JSON::ParserError
+				nil
+			end
 		end
 	end
 end

@@ -53,8 +53,6 @@ module Mill
 			objections.select { |o| SERIOUS.include?(severity_of(o)) }
 		end
 
-		def severity_of(objection) = objection[:severity].to_s.strip.downcase
-
 		def rejects? = serious_objections.any?
 
 		def validate
@@ -75,6 +73,8 @@ module Mill
 		end
 
 		private
+
+		def severity_of(objection) = objection[:severity].to_s.strip.downcase
 
 		# The nonce is what makes a stale or replayed verdict unrepresentable: a
 		# stage cannot forge one it was never given, and cannot reuse one from an

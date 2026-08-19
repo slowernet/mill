@@ -31,6 +31,14 @@ module Mill
 	def self.now
 		Time.now.utc.to_i
 	end
+
+	# Text mill did not write — gh output, git output, a stage's stdout — is UTF-8
+	# whatever the locale claims. A byte that is genuinely undecodable is dropped
+	# rather than losing the payload it sits in.
+	def self.utf8(text)
+		text = text.to_s.dup.force_encoding(Encoding::UTF_8)
+		text.valid_encoding? ? text : text.scrub('')
+	end
 end
 
 require_relative 'mill/clock'
@@ -47,5 +55,6 @@ require_relative 'mill/spec'
 require_relative 'mill/ledger'
 require_relative 'mill/prompts'
 require_relative 'mill/runner'
+require_relative 'mill/run'
 require_relative 'mill/claude'
 require_relative 'mill/doctor'

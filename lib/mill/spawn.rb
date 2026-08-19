@@ -153,13 +153,13 @@ module Mill
 				drain = drain_stderr(stderr)
 
 				stdout.each_line do |raw|
-					line = utf8(raw)
+					line = Mill.utf8(raw)
 					stream.consume(line)
 					written = append(log, written, redact(line))
 				end
 
 				@status = wait_thr.value
-				written = append(log, written, mill_line(stderr: drain.join(2) ? utf8(drain.value.to_s) : ''))
+				written = append(log, written, mill_line(stderr: drain.join(2) ? Mill.utf8(drain.value) : ''))
 			end
 			written
 		end
@@ -186,18 +186,12 @@ module Mill
 			@secrets.reduce(line) { |acc, secret| acc.gsub(secret, '[redacted]') }
 		end
 
-		# A stray byte in a file the stage read is not a reason to lose the launch.
-		def utf8(line)
-			line = line.dup.force_encoding(Encoding::UTF_8)
-			line.valid_encoding? ? line : line.scrub('?')
-		end
-
 		# mill's own annotations ride the stream as ordinary JSON lines so the log
 		# stays one parseable format, and go through the scrubber like anything else.
 		def mill_line(fields)
 			return '' if fields.values.all? { |v| v.nil? || v.to_s.empty? }
 
-			redact(utf8("#{{ type: 'mill' }.merge(fields).to_json}\n"))
+			redact(Mill.utf8("#{{ type: 'mill' }.merge(fields).to_json}\n"))
 		end
 
 		def append(log, written, line)

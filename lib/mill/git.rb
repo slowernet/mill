@@ -11,9 +11,11 @@ module Mill
 
 		Result = Struct.new(:out, :err, :ok, keyword_init: true)
 
+		# Open3 tags its output with Encoding.default_external, and a branch name, a
+		# path, or a commit message can carry anything.
 		def self.run(repo_path, *args)
 			out, err, status = Open3.capture3('git', '-C', repo_path.to_s, *args.map(&:to_s))
-			Result.new(out: utf8(out), err: utf8(err), ok: status.success?)
+			Result.new(out: Mill.utf8(out), err: Mill.utf8(err), ok: status.success?)
 		rescue SystemCallError => e
 			Result.new(out: '', err: e.message, ok: false)
 		end
@@ -23,14 +25,6 @@ module Mill
 			raise Error, "git #{args.first(2).join(' ')} failed: #{result.err.strip[0, 300]}" unless result.ok
 
 			result.out
-		end
-
-		# Same reason as Mill::Github#utf8: Open3 tags its output with
-		# Encoding.default_external, and a branch name, a path, or a commit message
-		# can carry anything. mill pins the default at load too; this is the seam.
-		def self.utf8(text)
-			text = text.dup.force_encoding(Encoding::UTF_8)
-			text.valid_encoding? ? text : text.scrub('')
 		end
 
 		# The spec is the file the branch *adds* under the prefix, found by diffing

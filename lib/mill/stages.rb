@@ -86,15 +86,19 @@ module Mill
 		# route, under a skill expecting a plan it never wrote, and then fallen off
 		# the end of the graph without ever reaching `pr`.
 		def self.reviewed_stage(route, reviewer)
-			stages = ROUTES[route] or raise Mill::Error, "unknown route: #{route}"
+			stages = stages_for(route)
 			index = stages.index(reviewer) or raise Mill::Error, "#{reviewer} is not on the #{route} route"
 			raise Mill::Error, "#{reviewer} has no stage before it" if index.zero?
 
 			stages[index - 1]
 		end
 
+		def self.stages_for(route)
+			ROUTES[route] or raise Mill::Error, "unknown route: #{route}"
+		end
+
 		def self.next_stage(route, current)
-			stages = ROUTES[route] or raise Mill::Error, "unknown route: #{route}"
+			stages = stages_for(route)
 			stages[stages.index(current).to_i + 1] if stages.include?(current)
 		end
 	end
