@@ -95,9 +95,16 @@ module Mill
 			data.dig(:data, :user, :projectV2, :workflows, :nodes) || []
 		end
 
-		def comments(repo, number)
-			pages = json('api', "repos/#{repo}/issues/#{number}/comments?per_page=100",
-				'--paginate', '--slurp')
+		# `since` is why the cursor exists. Without it every sweep re-fetches every
+		# comment on every live subject: a run blocked for a week on a 300-comment
+		# issue is ten paginated pages every tick, which ends in a secondary rate
+		# limit that wedges the poller. It is inclusive of the boundary second, so
+		# a comment created in the same second comes back again — which is what the
+		# caller's own filter and the unique index on gh_node_id are for.
+		def comments(repo, number, since: nil)
+			path = "repos/#{repo}/issues/#{number}/comments?per_page=100"
+			path += "&since=#{since}" if since
+			pages = json('api', path, '--paginate', '--slurp')
 			Array(pages).flatten(1)
 		end
 

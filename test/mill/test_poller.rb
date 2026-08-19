@@ -215,5 +215,118 @@ module Mill
 		def test_a_poller_will_not_invent_its_own_supervisor
 			assert_raises(ArgumentError) { Mill::Poller.new(db: db) }
 		end
+
+		# --- the comment sweep ---------------------------------------------------
+
+		def sweeping(sup: FakeSupervisor.new, calls: [], failing: false)
+			gh = Mill::Github.new(runner: lambda { |args|
+				calls << args
+				if args.first == 'api'
+					raise Mill::Github::Error, 'boom' if failing
+
+					next fixture('comments_dated')
+				end
+				args[1] == 'item-list' ? fixture('board_ready') : ''
+			})
+			board = Mill::Board.new(db: db, github: gh, project: 3, owner: 'slowernet')
+			Mill::Poller.new(db: db, github: gh, board: board, supervisor: sup)
+		end
+
+		def blocked_subject
+			repo_id = prepared_repo
+			create_run(repo_id: repo_id, subject_number: 1, status: 'blocked')
+			repo_id
+		end
+
+		def test_a_trusted_comment_becomes_an_event
+			blocked_subject
+			sweeping.sweep
+
+			assert_equal 1, db[:events].where(gh_node_id: 'IC_11').count
+		end
+
+		# Comment text becomes prompt text, and a subprocess holds real credentials.
+		def test_a_stranger_starts_nothing
+			blocked_subject
+			sweeping.sweep
+
+			assert_equal 0, db[:events].where(gh_node_id: 'IC_12').count
+		end
+
+		def test_mills_own_comment_is_not_a_trigger
+			blocked_subject
+			sweeping.sweep
+
+			assert_equal 0, db[:events].where(gh_node_id: 'IC_13').count
+		end
+
+		# GitHub's quote-reply copies the source markdown including HTML comments,
+		# so a whole-body search for the marker would silently discard the only
+		# channel in the design that reaches a person.
+		def test_a_quote_reply_carrying_the_marker_is_still_your_answer
+			blocked_subject
+			sweeping.sweep
+
+			assert_equal 1, db[:events].where(gh_node_id: 'IC_14').count
+		end
+
+		def test_the_same_comment_is_never_recorded_twice
+			blocked_subject
+			p = sweeping
+			p.sweep
+			p.sweep
+
+			assert_equal 1, db[:events].where(gh_node_id: 'IC_11').count
+		end
+
+		def test_the_cursor_advances_after_a_complete_sweep
+			repo_id = blocked_subject
+			sweeping.sweep
+
+			assert_equal '2026-08-19T10:03:00Z', db[:repos].where(id: repo_id).get(:comments_cursor)
+		end
+
+		# A fetch that stops partway must write no cursor, or the comments it never
+		# saw are skipped forever.
+		def test_a_failed_fetch_leaves_the_cursor_alone
+			repo_id = blocked_subject
+			p = sweeping(failing: true)
+
+			assert_raises(Mill::Github::Error) { p.sweep }
+			assert_nil db[:repos].where(id: repo_id).get(:comments_cursor)
+		end
+
+		# Without `since` a blocked run re-fetches its whole comment history every
+		# tick, which on a busy issue ends in a rate limit.
+		def test_the_cursor_is_sent_to_github_rather_than_only_filtering_here
+			repo_id = blocked_subject
+			db[:repos].where(id: repo_id).update(comments_cursor: '2026-08-19T09:00:00Z')
+			calls = []
+			sweeping(calls: calls).sweep
+
+			assert(calls.any? { |args| args[1].to_s.include?('since=2026-08-19T09:00:00Z') })
+		end
+
+		# Bounded deliberately: subjects mill has a live run on, not every issue in
+		# every repo the board touches.
+		def test_only_interesting_subjects_are_swept
+			repo_id = prepared_repo
+			create_run(repo_id: repo_id, subject_number: 1, status: 'blocked')
+			create_run(repo_id: repo_id, subject_number: 9, status: 'done')
+			calls = []
+			sweeping(calls: calls).sweep
+			fetched = calls.select { |args| args.first == 'api' }.map { |args| args[1] }
+
+			assert(fetched.any? { |url| url.include?('/issues/1/comments') })
+			refute(fetched.any? { |url| url.include?('/issues/9/comments') })
+		end
+
+		def test_a_repo_with_nothing_live_is_not_swept
+			prepared_repo
+			calls = []
+			sweeping(calls: calls).sweep
+
+			assert_empty calls.select { |args| args.first == 'api' }
+		end
 	end
 end

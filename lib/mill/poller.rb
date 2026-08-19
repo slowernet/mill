@@ -30,6 +30,7 @@ module Mill
 		def tick
 			@board.redrive
 			reconcile
+			sweep
 		end
 
 		def reconcile
@@ -46,7 +47,59 @@ module Mill
 			@board.items.select { |item| item[:status] == 'Ready' && !active?(item) }
 		end
 
+		# Comments are genuinely events, unlike board state, so these are consumed
+		# rather than reconciled — which is why they need a cursor and a dedupe key.
+		def sweep
+			subjects_of_interest.group_by { |subject| subject[:repo_id] }.each do |repo_id, subjects|
+				repo = @db[:repos].where(id: repo_id).first
+				record(repo, subjects.flat_map { |subject| fetch(repo, subject) })
+			end
+		end
+
+		# Bounded deliberately: subjects mill has a live run on, not every issue in
+		# every repo the board touches. An unbounded sweep on an active repo would
+		# leave tens of thousands of rows behind with nothing explaining them.
+		def subjects_of_interest
+			@db[:runs].where(status: %w[running blocked])
+				.select_map(%i[repo_id subject_kind subject_number]).uniq
+				.map { |repo_id, kind, number| { repo_id: repo_id, kind: kind, number: number } }
+		end
+
 		private
+
+		def fetch(repo, subject)
+			slug = "#{repo[:owner]}/#{repo[:name]}"
+			@github.comments(slug, subject[:number], since: repo[:comments_cursor])
+				.map { |c| c.merge(subject_kind: subject[:kind], subject_number: subject[:number]) }
+		end
+
+		# The cursor is advanced inside the same transaction as the inserts. A
+		# fetch that raises partway therefore writes no cursor, and the comments it
+		# never saw are picked up next tick rather than skipped forever.
+		def record(repo, comments)
+			usable = comments.select { |comment| trigger?(comment, repo) }
+			latest = comments.filter_map { |comment| comment[:created_at] }.max
+
+			@db.transaction do
+				usable.each { |comment| insert_event(repo, comment) }
+				@db[:repos].where(id: repo[:id]).update(comments_cursor: latest) if latest
+			end
+		end
+
+		def trigger?(comment, repo)
+			return false unless Mill::Github.trusted_author?(comment)
+			return false if Mill::Github.own_comment?(comment[:body])
+
+			cursor = repo[:comments_cursor]
+			cursor.nil? || comment[:created_at].to_s > cursor
+		end
+
+		def insert_event(repo, comment)
+			@db[:events].insert_conflict.insert(
+				repo_id: repo[:id], kind: 'comment', gh_node_id: comment[:node_id].to_s,
+				payload_json: comment.to_json, attempts: 0, state: 'pending', created_at: Mill.now
+			)
+		end
 
 		# Both issues and PRs appear as items, and a PR-entry item is a subject in
 		# its own right — a Dependabot PR has no issue, so questions need somewhere
