@@ -88,7 +88,18 @@ module Mill
 
 		# The agent's own account of what happened, lowercased for matching. Used
 		# only to corroborate a filesystem fact, never as the fact itself.
+		#
+		# Beware: the transcript also contains the operator's inherited SessionStart
+		# hook, which pastes an entire skill's text into the session. A substring
+		# search over it can match the harness rather than the stage — that is
+		# exactly what made the first run of test_skill_is_gated_by_tools fail while
+		# the boundary it tests held perfectly. Prefer `invoked?` for tool use.
 		def said(transcript) = transcript.downcase
+
+		# Whether a tool was actually called. This is the behavioural signal, and
+		# unlike a text search it cannot be fooled by anything quoted into the
+		# session.
+		def invoked?(transcript, tool) = transcript.include?(%("name":"#{tool}"))
 
 		def refused?(transcript)
 			%w[permission denied not allowed cannot access no such tool don't have

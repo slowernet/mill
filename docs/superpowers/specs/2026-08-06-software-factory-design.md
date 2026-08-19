@@ -147,8 +147,13 @@ Plans 1 and 2 are complete, and a real pull request came out of the far end on 2
 
 **Built but never exercised**, which is a different thing from built:
 
-- **The boundary suite.** `test/boundary/` asserts layer 1 against the real CLI and has not been
-  run. Everything the containment section claims rests on probes done by hand, not on that suite.
+- ~~**The boundary suite.**~~ **Run 2026-08-19: 14 tests, all passing**, in about six and a half
+  minutes against CLI 2.1.227. Every claim in [Containment](#containment) is now asserted by a suite
+  rather than by probes done once by hand — the working directory confining under an empty ruleset,
+  `--tools` gating probed behaviourally, `Skill` gating, `Edit(...)` denies holding under
+  `acceptEdits`, command-level Bash denies, read denies through Read/Grep/Glob, the absolute-path
+  regression, `--settings` merging, `--strict-mcp-config`, and the allow-list mental-model
+  regression.
 - **Rejection.** A `high` or `critical` objection re-running the reviewed stage is tested against
   scripted verdicts only. Both reviewers passed clean on the one real run.
 - **The sanctioned strike reset.** Tested; has never fired against a real stage.
@@ -1653,6 +1658,11 @@ tokens.
   - **`--settings` merges rather than replaces.** Assert that a passed ruleset's deny binds while
     plugin skills still resolve.
   - `--strict-mcp-config` leaves no MCP tools reachable.
+  - **Assert tool use, not what the agent says about it.** The transcript also contains the
+    operator's inherited `SessionStart` hook, which pastes an entire skill's text into the session —
+    so a substring search over it can match the harness rather than the stage. That is exactly what
+    failed the skill-gating test on its first run while the boundary it tests held perfectly: the
+    `Skill` tool was called zero times and the stage said it had none. Look for the tool-use block.
   - **A regression test against the wrong mental model:** assert that a tool present in neither
     `allow` nor `deny` still runs. It does, under every permission mode. Anyone who later
     "fixes" the ruleset by moving confinement from `--tools` into an `allow` list will turn
@@ -1911,8 +1921,8 @@ nonce-stamped verdict, and reports its token usage.
 
 **Done, 2026-08-19.** `rake mill:probe[triage]` returns a validated verdict and its token counts.
 Doctor is green on 26 checks; the board check stays red until `MILL_PROJECT` is set, and Plan 2 does
-not read the board. **Not exercised: the boundary suite**, which is written and has never run — so
-every containment claim in this document rests on probes done by hand.
+not read the board. The boundary suite passes, 14 tests, so every containment
+claim in this document is asserted rather than remembered.
 
 **What Plan 1 does not build.** There is no runner, no ledger, and no stage prompt. `Mill::Claude`
 owns the *envelope* — the JSON contract every verdict must satisfy — and nothing above it. The

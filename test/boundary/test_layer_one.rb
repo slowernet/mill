@@ -59,13 +59,13 @@ module Mill
 
 			without, = probe('triage', ask, tools: %w[Read Glob Grep])
 
-			refute_includes said(without), 'using skill',
-				'a stage without Skill in --tools must not be able to load one'
+			refute invoked?(without, 'Skill'),
+				'a stage without Skill in --tools must not be able to call it'
 
 			with, = probe('triage', ask, tools: %w[Read Glob Grep Skill])
 
-			refute_includes said(with), 'no such tool',
-				'a stage with Skill in --tools must be able to load one'
+			assert invoked?(with, 'Skill'),
+				'a stage with Skill in --tools must be able to call it, or every skill in the graph is decorative'
 		end
 
 		# --- deny rules: scoping inside an already-closed box -------------------
