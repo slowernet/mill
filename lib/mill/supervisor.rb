@@ -191,11 +191,15 @@ module Mill
 			@board&.want(row[:id], 'blocked')
 		end
 
+		# Returns the runner's state — which stage stopped, why, and what it asked —
+		# not the run row. `finish` announces from this, and the row carries none of
+		# it: a row-shaped return posted `Blocked at ``: .` to the subject, which is
+		# the only channel that reaches a person, saying nothing.
 		def walk(run_id, answers: [])
 			run = Mill::Run.adopt(run_id, answers: answers, db: @db)
 			run.on_identity = ->(pgid) { @own_pgids << pgid }
 			run.call
-			@db[:runs].where(id: run_id).first
+			run.runner.state
 		end
 
 		def announce(row, state)

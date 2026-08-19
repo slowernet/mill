@@ -275,6 +275,57 @@ module Mill
 			assert_match(/failed/i, bodies(calls).last)
 		end
 
+		# Everything above tests `finish` with a hand-made state hash, which is what
+		# let the real walker return the wrong shape entirely. This drives the
+		# actual walker, through a scripted launcher, and asserts what reaches
+		# GitHub — the only channel that reaches a person once you have walked away.
+		def test_the_walker_hands_finish_what_a_blocked_stage_asked
+			calls = []
+			sup = supervisor(comments: calls)
+			run_id = claim(sup)
+			blocked = Mill::Claude::Attempt.new(stage: 'triage', number: 1, nonce: 'n',
+				result: fake_result, verdict: fake_verdict)
+
+			sup.start(run_id, walker: lambda { |id|
+				run = Mill::Run.adopt(id, db: db)
+				run.runner(launcher: ->(**) { blocked }).call
+				run.runner.state
+			}).join
+
+			body = bodies(calls).last
+
+			assert_match(/triage/, body)
+			assert_match(/Which spec is authoritative\?/, body)
+			refute_match(/Blocked at ``/, body)
+		end
+
+		def fake_verdict
+			v = Object.new
+			v.define_singleton_method(:valid?) { true }
+			v.define_singleton_method(:status) { 'blocked' }
+			v.define_singleton_method(:blocked?) { true }
+			v.define_singleton_method(:rejects?) { false }
+			v.define_singleton_method(:questions) { ['Which spec is authoritative?'] }
+			v.define_singleton_method(:errors) { [] }
+			v.define_singleton_method(:data) { { summary: 'asked' } }
+			v
+		end
+
+		def fake_result
+			stream = Object.new
+			stream.define_singleton_method(:session_id) { 'sess-1' }
+			stream.define_singleton_method(:resume_failed?) { false }
+			stream.define_singleton_method(:tokens) { { tokens_in: 1, tokens_out: 2 } }
+			stream.define_singleton_method(:model) { 'claude-sonnet-5' }
+
+			r = Object.new
+			r.define_singleton_method(:success?) { true }
+			r.define_singleton_method(:error) { nil }
+			r.define_singleton_method(:log_path) { '/dev/null' }
+			r.define_singleton_method(:stream) { stream }
+			r
+		end
+
 		def test_a_run_thread_is_tracked_while_it_walks
 			sup = supervisor
 			run_id = claim(sup)
