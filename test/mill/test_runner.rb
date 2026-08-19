@@ -21,7 +21,8 @@ module Mill
 
 		# The smallest thing shaped like a Mill::Claude::Attempt.
 		def scripted(status: 'ok', valid: true, success: true, objections: [], questions: [],
-			artifact: nil, session: 'sess-1', summary: 'did the thing', title: 'A title', body: 'A body')
+			artifact: nil, session: 'sess-1', summary: 'did the thing', title: 'A title', body: 'A body',
+			resume_failed: false)
 			verdict = Object.new
 			verdict.define_singleton_method(:valid?) { valid }
 			verdict.define_singleton_method(:status) { status }
@@ -36,6 +37,7 @@ module Mill
 
 			stream = Object.new
 			stream.define_singleton_method(:session_id) { session }
+			stream.define_singleton_method(:resume_failed?) { resume_failed }
 			stream.define_singleton_method(:tokens) { { tokens_in: 1, tokens_out: 2 } }
 			stream.define_singleton_method(:model) { 'claude-opus-5' }
 
@@ -296,6 +298,43 @@ module Mill
 			assert_nil row[:tokens_out]
 			assert_equal 5, row[:tokens_in]
 			assert_equal 900, row[:cache_read_tokens]
+		end
+
+		# --- a session mill could not reopen ----------------------------------
+
+		# The ledger prices a failed resume as something the machine did to the
+		# stage: an attempt and no strike. It does not present as a crash — the CLI
+		# exits cleanly having done nothing — so without this it read as a stage
+		# that produced no verdict, and took a strike for mill's problem.
+		def test_a_session_that_will_not_reopen_costs_no_strike
+			runner = runner_for([scripted(resume_failed: true, valid: false)] + clean_run)
+			runner.call
+
+			assert_equal 0, Mill::Ledger.new(db, runner.run_id).strikes('triage')
+			assert_equal 'resume_failed', db[:stage_attempts]
+				.where(run_id: runner.run_id, stage: 'triage', number: 1).get(:status)
+		end
+
+		def test_the_stage_is_started_fresh_after_a_failed_resume
+			runner = runner_for([scripted(status: 'failed'),					# strike, session kept
+				scripted(resume_failed: true, valid: false),					# resume fails
+				->(stage) { ok_for(stage) }] + clean_run)
+			runner.call
+
+			assert_nil @calls[0][:session_id], 'first launch is always fresh'
+			assert_equal 'sess-1', @calls[1][:session_id], 'the retry resumes'
+			assert_nil @calls[2][:session_id], 'after a failed resume, fresh again'
+		end
+
+		# The session held what the stage had worked out. What survives it is what
+		# the stage reported, so mill hands that back.
+		def test_what_the_stage_reported_before_is_handed_back
+			runner = runner_for([scripted(status: 'failed', summary: 'I got halfway'),
+				scripted(resume_failed: true, valid: false),
+				->(stage) { ok_for(stage) }] + clean_run)
+			runner.call
+
+			assert_includes @calls[2][:prompt], 'I got halfway'
 		end
 
 		# --- the pull request -------------------------------------------------

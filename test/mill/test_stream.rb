@@ -139,6 +139,32 @@ module Mill
 			assert_equal '{}', s.verdict_payload
 		end
 
+		# Measured 2026-08-19 against an unusable session id: the CLI answers with
+		# subtype error_during_execution, is_error true, zero turns, and an errors
+		# entry naming the session — it does not crash.
+		def test_a_session_that_will_not_reopen_is_recognisable
+			s = Mill::Stream.new
+			s.consume('{"type":"result","subtype":"error_during_execution","is_error":true,' \
+				'"session_id":"00000000-0000-0000-0000-000000000000","num_turns":0,' \
+				'"errors":["No conversation found with session ID: 00000000-0000-0000-0000-000000000000"]}')
+
+			assert_predicate s, :resume_failed?
+			assert_predicate s, :error?
+			assert_nil s.raw_verdict, 'it produced no verdict either, which is why this must be checked first'
+		end
+
+		def test_an_ordinary_failure_is_not_a_failed_resume
+			s = Mill::Stream.new
+			s.consume('{"type":"result","subtype":"error_during_execution","is_error":true,' \
+				'"session_id":"s","errors":["something else went wrong"]}')
+
+			refute_predicate s, :resume_failed?
+		end
+
+		def test_a_clean_result_is_not_a_failed_resume
+			refute_predicate stream_for('plan_ok'), :resume_failed?
+		end
+
 		def test_reports_completion_and_success
 			s = stream_for('plan_ok')
 

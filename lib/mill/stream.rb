@@ -82,6 +82,20 @@ module Mill
 
 		def error? = @result ? !!@result[:is_error] : false
 
+		def errors = Array(@result && @result[:errors])
+
+		# A session the CLI will not reopen. Measured 2026-08-19: it answers with
+		# subtype `error_during_execution`, is_error true, zero turns, and an
+		# `errors` entry naming the session — not with a crash, so nothing else in
+		# mill would have told these apart from a stage that simply died.
+		#
+		# The distinction matters because the ledger prices them differently: a
+		# stage that failed pays a strike, and a session mill could not reopen is
+		# something the machine did to it and costs nothing.
+		def resume_failed?
+			errors.any? { |e| e.to_s.match?(/no conversation found|session .*not found/i) }
+		end
+
 		private
 
 		def on_system(msg)

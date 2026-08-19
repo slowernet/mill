@@ -12,13 +12,13 @@ module Mill
 		end
 
 		# The smallest thing shaped like a Mill::Claude::Attempt.
-		def attempt(status: 'ok', valid: true, success: true)
+		def attempt(status: 'ok', valid: true, success: true, resume_failed: false)
 			verdict = Object.new
 			verdict.define_singleton_method(:valid?) { valid }
 			verdict.define_singleton_method(:status) { status }
 			result = Object.new
 			result.define_singleton_method(:success?) { success }
-			Struct.new(:verdict, :result).new(verdict, result)
+			Struct.new(:verdict, :result, :resume_failed?).new(verdict, result, resume_failed)
 		end
 
 		# --- classification -------------------------------------------------
@@ -44,6 +44,14 @@ module Mill
 		def test_a_dead_process_is_crashed_whatever_it_said
 			assert_equal :crashed, Mill::Ledger.classify(attempt(success: false))
 			assert_equal :crashed, Mill::Ledger.classify(attempt(status: 'ok', success: false))
+		end
+
+		# A session the CLI will not reopen exits cleanly having done nothing, so it
+		# looks like neither a crash nor a bad verdict. It is checked first because
+		# it is the only one of the three the stage did not cause.
+		def test_a_session_that_will_not_reopen_is_not_the_stage_failing
+			assert_equal :resume_failed, Mill::Ledger.classify(attempt(resume_failed: true, valid: false))
+			assert_equal :resume_failed, Mill::Ledger.classify(attempt(resume_failed: true, success: false))
 		end
 
 		# --- the cost table, one case per row -------------------------------

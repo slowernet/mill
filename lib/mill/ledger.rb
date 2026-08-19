@@ -47,7 +47,11 @@ module Mill
 
 		# A process that died outranks whatever it managed to emit: mill has no
 		# trustworthy account of what happened either way.
+		# Checked before anything else: a session the CLI would not reopen is not the
+		# stage failing, and it does not present as a crash either — the process
+		# exits cleanly having done nothing.
 		def self.classify(attempt)
+			return :resume_failed if attempt.resume_failed?
 			return :crashed unless attempt.result.success?
 			return :no_verdict unless attempt.verdict.valid?
 

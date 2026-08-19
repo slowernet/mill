@@ -152,10 +152,12 @@ Plans 1 and 2 are complete, and a real pull request came out of the far end on 2
 - **Rejection.** A `high` or `critical` objection re-running the reviewed stage is tested against
   scripted verdicts only. Both reviewers passed clean on the one real run.
 - **The sanctioned strike reset.** Tested; has never fired against a real stage.
-- **The `--resume` fallback.** The contract says a failed resume starts a fresh session with the
-  prior context appended, costing an attempt and no strike. Not implemented: a failed resume
-  currently reads as a crashed attempt and takes a strike, which is the one place the ledger and
-  the code disagree.
+- ~~**The `--resume` fallback.**~~ **Built 2026-08-19.** Measured against an unusable session id:
+  the CLI answers with subtype `error_during_execution`, `is_error` true, zero turns, and an
+  `errors` entry naming the session — it does not crash, and it produces no verdict, so without a
+  check for it a failed resume read as a stage that said nothing and took a strike for mill's
+  problem. It is now classified before either, costs an attempt and no strike, and the next launch
+  starts fresh with what that stage reported on its earlier attempts handed back to it.
 
 ## Non-goals
 

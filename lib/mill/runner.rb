@@ -105,9 +105,16 @@ module Mill
 		# trustworthy account of what happened, so it starts fresh.
 		def settle(attempt, number)
 			outcome = Mill::Ledger.classify(attempt)
-			@sessions[@stage] = outcome == :no_verdict ? nil : attempt.session_id
+			@sessions[@stage] = %i[no_verdict resume_failed].include?(outcome) ? nil : attempt.session_id
 
 			case outcome
+			when :resume_failed
+				# Start fresh with the prior context appended, per the ledger. The
+				# session held what the stage had worked out and is gone; what mill
+				# can still hand it is what it reported last time.
+				@sessions[@stage] = nil
+				@ledger.charge(stage: @stage, outcome: :resume_failed, number: number, attempt: attempt)
+				:rerun
 			when :blocked
 				@ledger.charge(stage: @stage, outcome: :blocked, number: number, attempt: attempt)
 				halt(:blocked, "#{@stage} asked a question", questions: attempt.verdict.questions)
@@ -177,8 +184,22 @@ module Mill
 				verdicts: @verdicts,
 				objections: @objections[stage],
 				route: route,
+				previously: prior_reports(stage),
 				spend: (spend_lines if stage == 'pr')
 			).compact
+		end
+
+		# What this stage reported on its own earlier attempts, for the case where
+		# mill could not reopen its session and has to start it over. The session
+		# held the thinking; this is what survives it.
+		def prior_reports(stage)
+			@db[:stage_attempts].where(run_id: @run_id, stage: stage).exclude(verdict_json: nil)
+				.order(:number).to_a.filter_map do |row|
+					data = JSON.parse(row[:verdict_json], symbolize_names: true)
+					next if data[:summary].to_s.empty?
+
+					"attempt #{row[:number]} (#{data[:status]}): #{data[:summary]}"
+				end
 		end
 
 		# The pr stage is told to put the per-stage cost in the body. On the first

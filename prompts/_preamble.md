@@ -18,6 +18,14 @@ question for a human, and naming the exact host and why makes it answerable.
 their answer, so nothing you have worked out is lost. Asking costs you nothing. Guessing costs a
 wrong implementation nobody asked for.
 
+## What you reported on earlier attempts at this stage
+
+{{previously|Nothing — this is your first attempt at this stage.}}
+
+If that list is not empty and you do not remember doing any of it, your previous session could not
+be reopened and mill started you fresh. That is mill's problem, not yours, and it costs you nothing.
+Pick up from what is written there rather than starting the thinking over.
+
 ## Answers to what you asked
 
 {{answers|You have asked nothing yet on this run.}}

@@ -22,6 +22,7 @@ module Mill
 			def blocked? = verdict.valid? && verdict.blocked?
 			def rejects? = verdict.valid? && verdict.rejects?
 			def session_id = result.stream.session_id
+			def resume_failed? = result.stream.resume_failed?
 			def tokens = result.stream.tokens
 			def model = result.stream.model
 			def log_path = result.log_path
