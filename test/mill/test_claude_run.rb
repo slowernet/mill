@@ -13,16 +13,18 @@ module Mill
 			script = <<~RUBY
 				require 'json'
 				prompt = ARGV[ARGV.index('-p') + 1]
-				nonce = prompt[/"nonce":\\s*"([0-9a-f]+)"/, 1]
-				stage = prompt[/"stage":\\s*"([^"]+)"/, 1]
-				invocation = prompt[/"invocation":\\s*(\\d+)/, 1].to_i
+				stage = prompt[/`stage` is "([^"]+)"/, 1]
+				invocation = prompt[/`invocation` is (\\d+)/, 1].to_i
+				nonce = prompt[/`nonce` is\\s*\\n?\\s*"([0-9a-f]+)"/, 1]
 				verdict = { stage: stage, invocation: invocation, nonce: nonce, status: 'ok' }
 					.merge(JSON.parse(#{verdict_overrides.to_json.dump}, symbolize_names: true))
 				puts({ type: 'system', subtype: 'init', session_id: 'sess-fake', model: 'claude-opus-5' }.to_json)
+				# --json-schema makes the real CLI return the verdict already parsed in
+				# structured_output, with the same object as a string in result.
 				puts({ type: 'result', subtype: 'success', is_error: false, session_id: 'sess-fake',
 					usage: { input_tokens: 5, output_tokens: 356, cache_read_input_tokens: 900,
 						cache_creation_input_tokens: 20 },
-					result: verdict.to_json }.to_json)
+					result: verdict.to_json, structured_output: verdict }.to_json)
 				exit #{exit_code}
 			RUBY
 			['ruby', '-e', script]
@@ -66,12 +68,13 @@ module Mill
 		end
 
 		# The nonce reaches the stage only through the prompt, which is what makes a
-		# replayed verdict unrepresentable.
+		# replayed verdict unrepresentable. The schema constrains the shape; it
+		# cannot know which launch this is, so the nonce still has to travel.
 		def test_the_nonce_travels_in_the_prompt_and_must_come_back
 			attempt, claude = launch('triage')
 			prompt = claude.seen_argv[claude.seen_argv.index('-p') + 1]
 
-			assert_match(/"nonce": "#{attempt.nonce}"/, prompt)
+			assert_match(/`nonce` is\s*\n?\s*"#{attempt.nonce}"/, prompt)
 			assert_predicate attempt.verdict, :valid?
 		end
 

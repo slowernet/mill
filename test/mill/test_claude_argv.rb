@@ -1,4 +1,5 @@
 require 'test_helper'
+require 'json'
 
 module Mill
 	# These assert CLAUDE.md's safety invariants. A failure here is a containment
@@ -112,6 +113,54 @@ module Mill
 
 			assert_includes args, '--output-format'
 			assert_equal 'stream-json', args[args.index('--output-format') + 1]
+		end
+
+		# --json-schema turns the verdict into a forced tool call, so a stage cannot
+		# wrap it in prose or a code fence. Measured 2026-08-19: without it, both
+		# triage attempts on the first real run prefixed a sentence and were
+		# rejected, costing two strikes for a correct answer.
+		def test_every_stage_constrains_its_verdict_with_a_schema
+			Mill::Stages.names.each do |stage|
+				args = argv_for(stage)
+
+				assert_includes args, '--json-schema', "#{stage} does not constrain its verdict"
+				schema = JSON.parse(args[args.index('--json-schema') + 1])
+
+				assert_equal 'object', schema['type']
+				assert_equal [stage], schema.dig('properties', 'stage', 'enum')
+				assert_equal %w[stage invocation nonce status summary].sort, schema['required'].sort
+				refute schema['additionalProperties'], 'a stage must not invent fields'
+			end
+		end
+
+		def test_only_triage_is_offered_a_route
+			Mill::Stages.names.each do |stage|
+				properties = Mill::Verdict.schema_for(stage)[:properties]
+
+				assert_equal(stage == 'triage', properties.key?(:route), "route on #{stage}")
+			end
+		end
+
+		def test_only_a_stage_with_an_artifact_pattern_is_offered_one
+			Mill::Stages.names.each do |stage|
+				properties = Mill::Verdict.schema_for(stage)[:properties]
+
+				assert_equal !Mill::Stages[stage][:artifact].nil?, properties.key?(:artifact),
+					"artifact on #{stage}"
+			end
+		end
+
+		# The reviewer skill spells its severities in upper case. Constraining the
+		# tool call is what stops that reaching mill at all.
+		def test_only_reviewers_are_offered_objections_and_the_severities_are_bounded
+			%w[review:plan review:code].each do |stage|
+				items = Mill::Verdict.schema_for(stage).dig(:properties, :objections, :items)
+
+				assert_equal Mill::Verdict::SEVERITIES, items.dig(:properties, :severity, :enum)
+				assert_equal %w[severity claim notes].sort, items[:required].sort
+			end
+
+			refute Mill::Verdict.schema_for('implement')[:properties].key?(:objections)
 		end
 
 		def test_nonces_are_unique_per_spawn

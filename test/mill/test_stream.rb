@@ -118,6 +118,27 @@ module Mill
 			assert_equal 'abc123', verdict[:nonce]
 		end
 
+		# --json-schema makes the CLI return the verdict already parsed. mill prefers
+		# that and keeps the string form for the log.
+		def test_the_structured_output_is_preferred_over_the_final_message
+			s = Mill::Stream.new
+			s.consume('{"type":"result","subtype":"success","is_error":false,"session_id":"s",' \
+				'"result":"{\\"stage\\":\\"triage\\"}",' \
+				'"structured_output":{"stage":"triage","status":"ok"}}')
+
+			assert_equal({ stage: 'triage', status: 'ok' }, s.structured_verdict)
+			assert_equal({ stage: 'triage', status: 'ok' }, s.verdict_payload)
+			refute_nil s.raw_verdict, 'the string form stays, for the log'
+		end
+
+		def test_the_final_message_is_used_when_there_is_no_structured_output
+			s = Mill::Stream.new
+			s.consume('{"type":"result","subtype":"success","is_error":false,"session_id":"s",' \
+				'"result":"{}"}')
+
+			assert_equal '{}', s.verdict_payload
+		end
+
 		def test_reports_completion_and_success
 			s = stream_for('plan_ok')
 

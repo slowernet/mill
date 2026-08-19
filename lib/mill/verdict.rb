@@ -12,6 +12,50 @@ module Mill
 
 		attr_reader :data, :errors
 
+		# The shape mill requires, as JSON Schema, passed to `claude --json-schema`.
+		# The CLI turns it into a forced tool call, so a stage cannot wrap its
+		# verdict in prose or a code fence — measured 2026-08-19, including under
+		# --permission-mode acceptEdits with write tools.
+		#
+		# This enforces shape only. Everything that depends on *this* launch — the
+		# nonce, the artifact resolving inside the worktree, questions iff blocked —
+		# stays here, because a schema cannot know any of it.
+		def self.schema_for(stage)
+			config = Mill::Stages[stage]
+			properties = {
+				stage: { type: 'string', enum: [stage] },
+				invocation: { type: 'integer' },
+				nonce: { type: 'string' },
+				status: { type: 'string', enum: STATUSES },
+				summary: { type: 'string' },
+				questions: { type: 'array', items: { type: 'string' } }
+			}
+			properties[:artifact] = { type: %w[string null] } if config[:artifact]
+			properties[:route] = { type: %w[string null], enum: ROUTES + [nil] } if stage == 'triage'
+			properties[:objections] = objections_schema if stage.start_with?('review:')
+
+			{ type: 'object', properties: properties,
+			  required: %w[stage invocation nonce status summary], additionalProperties: false }
+		end
+
+		# The severity enum lives here rather than only in mill's own check: the
+		# reviewer skill's output format spells its severities in upper case, and
+		# constraining the tool call is what stops that reaching mill at all.
+		def self.objections_schema
+			{
+				type: 'array',
+				items: {
+					type: 'object',
+					properties: {
+						severity: { type: 'string', enum: SEVERITIES },
+						claim: { type: 'string' },
+						notes: { type: 'string' }
+					},
+					required: %w[severity claim notes], additionalProperties: false
+				}
+			}
+		end
+
 		# `worktree` is required rather than defaulted. It may be nil for a stage
 		# with no tree, but a caller that simply forgets it would silently skip the
 		# existence, emptiness, and symlink checks — and a plan stage that wrote
@@ -56,10 +100,8 @@ module Mill
 		def rejects? = serious_objections.any?
 
 		def validate
-			return fail!('no verdict: the stage ended without a structured message') if @raw.nil? || @raw.strip.empty?
-
-			@data = JSON.parse(@raw, symbolize_names: true)
-			return fail!('verdict is not a JSON object') unless @data.is_a?(Hash)
+			@data = coerce
+			return self if @data.nil?
 
 			check_envelope
 			check_status
@@ -67,12 +109,31 @@ module Mill
 			check_artifact
 			check_route
 			self
-		rescue JSON::ParserError => e
-			# Prose after the JSON lands here. Loud and immediate beats quiet.
-			fail!("verdict is not valid JSON: #{e.message}")
 		end
 
 		private
+
+		# `--json-schema` makes the CLI return the verdict already parsed, so the
+		# usual input here is a Hash. The string path stays for a stage that
+		# somehow answered without the tool: it is still a verdict if it parses,
+		# and still a failed attempt if it does not.
+		def coerce
+			return @raw.transform_keys(&:to_sym) if @raw.is_a?(Hash)
+
+			if @raw.nil? || @raw.to_s.strip.empty?
+				fail!('no verdict: the stage ended without a structured message')
+				return nil
+			end
+
+			parsed = JSON.parse(@raw, symbolize_names: true)
+			return parsed if parsed.is_a?(Hash)
+
+			fail!('verdict is not a JSON object')
+			nil
+		rescue JSON::ParserError => e
+			fail!("verdict is not valid JSON: #{e.message}")
+			nil
+		end
 
 		def severity_of(objection) = objection[:severity].to_s.strip.downcase
 

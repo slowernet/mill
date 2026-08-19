@@ -614,18 +614,38 @@ approved the code. The nonce is what makes that unrepresentable, and it does tha
 verdict arrives as a file or as a message — a stage cannot forge a nonce it was never given, and
 cannot replay one from a previous launch.
 
-The trade this makes: the stage's prompt must demand the verdict as the last thing it emits, and a
-stage that adds a closing paragraph after its JSON fails validation. That is a loud, immediate
-failure in the first minute of the first run rather than a quiet one months in, which is the right
-way round — and that is exactly how it went. The first real launch produced a well-formed verdict
-with three paragraphs of narration in front of it. What fixed it was giving the narration
-somewhere to go: the envelope now says that everything the stage wants to say belongs in
-`summary`, which is what mill puts in the log and the pull request body anyway. Telling a model
-not to explain itself does not work nearly as well as telling it where the explanation goes.
+**The shape is enforced by the CLI, not argued for in the prompt.** Every launch passes
+`--json-schema`, built from the stage graph: the status vocabulary, the objection severities, an
+`artifact` field only for stages that produce one, a `route` field only for `triage`. The CLI turns
+that schema into a forced tool call and returns the verdict already parsed, in `structured_output`
+on the result line. A stage physically cannot wrap it in prose or a code fence, because it is not
+emitting text at all.
+
+That was learned the expensive way, and the sequence is worth keeping. The first draft asked for
+the verdict as the last message and accepted the consequence: a stage that adds a closing paragraph
+fails validation, which is a loud failure on day one rather than a quiet one months in. On the
+first real run, `triage` produced a completely correct verdict — right stage, right nonce, right
+route, and a sound scope check — twice, each time behind one sentence of narration. Once fenced,
+once not. Both were rejected, both cost a strike, and the run blocked having spent 2,137 output
+tokens and $0.17 to reject the right answer for a leading sentence. Prompt wording had already been
+strengthened once and held only while the prompt was short.
+
+The lesson is not that models narrate. It is that **a constraint the prompt asks for is a
+constraint the pipeline does not have.** Anything mill genuinely requires of a stage's output
+belongs in the schema, where the CLI enforces it, and the prompt is left to explain what the fields
+*mean*.
+
+What the schema cannot know stays in `Mill::Verdict`: whether the nonce matches this launch, whether
+the artifact resolves inside the worktree without traversing a symlink, and whether questions are
+present iff the status is `blocked`. A schema constrains shape; only mill knows which launch this is.
 
 `pr_number` is deliberately not in the verdict. mill recovers it with
 `gh pr list --head <branch>`, which is idempotent, so a crash between `gh pr create` and the
 state write reconciles instead of opening a second PR.
+
+A stage that answers without the tool at all — an older CLI, a failure mode not yet seen — still
+lands on the string path and is validated the same way. It is a verdict if it parses and a failed
+attempt if it does not; silence is still never success.
 
 `Mill::Claude` accumulates four token counts from per-message `usage` as it tees, persisting
 running totals so a killed attempt retains what can be known — which is three of the four.

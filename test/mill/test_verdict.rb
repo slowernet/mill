@@ -12,6 +12,38 @@ module Mill
 			Mill::Verdict.validate(raw, stage: stage, invocation: invocation, nonce: nonce, worktree: worktree)
 		end
 
+		# With --json-schema the CLI hands back the verdict already parsed, so the
+		# usual input is a Hash rather than a string to parse.
+		def test_a_parsed_verdict_validates_without_a_round_trip
+			v = Mill::Verdict.validate(
+				{ stage: 'triage', invocation: 1, nonce: 'n1', status: 'ok', summary: 's' },
+				stage: 'triage', invocation: 1, nonce: 'n1', worktree: nil
+			)
+
+			assert_predicate v, :valid?
+			assert_equal 'ok', v.status
+		end
+
+		def test_a_parsed_verdict_is_still_checked_against_this_launch
+			v = Mill::Verdict.validate(
+				{ stage: 'triage', invocation: 1, nonce: 'stale', status: 'ok' },
+				stage: 'triage', invocation: 1, nonce: 'n1', worktree: nil
+			)
+
+			refute_predicate v, :valid?
+			assert_includes v.errors, 'nonce mismatch'
+		end
+
+		# String keys would arrive if anything ever hands mill an unsymbolized hash.
+		def test_a_parsed_verdict_with_string_keys_is_read_the_same_way
+			v = Mill::Verdict.validate(
+				{ 'stage' => 'triage', 'invocation' => 1, 'nonce' => 'n1', 'status' => 'ok' },
+				stage: 'triage', invocation: 1, nonce: 'n1', worktree: nil
+			)
+
+			assert_predicate v, :valid?
+		end
+
 		# Silence is never success.
 		def test_a_missing_verdict_is_a_failure
 			%w[  ].push(nil, '').each do |raw|

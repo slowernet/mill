@@ -69,6 +69,7 @@ module Mill
 			args += ['--settings', settings_path]
 			args << '--strict-mcp-config'
 			args += ['--output-format', 'stream-json', '--verbose']
+			args += ['--json-schema', JSON.generate(Mill::Verdict.schema_for(stage))]
 			args += ['--permission-mode', config[:permission_mode]] if config[:permission_mode]
 			args += ['--resume', session_id] if session_id
 			args
@@ -86,43 +87,34 @@ module Mill
 			result = spawn.run(argv(envelope(prompt, invocation, nonce), session_id: session_id), env: env)
 
 			Attempt.new(stage: stage, invocation: invocation, nonce: nonce, result: result,
-				verdict: Mill::Verdict.validate(result.stream.raw_verdict, stage: stage,
+				verdict: Mill::Verdict.validate(result.stream.verdict_payload, stage: stage,
 					invocation: invocation, nonce: nonce, worktree: worktree))
 		end
 
-		# mill owns the envelope; the stage prompt owns everything above it. The
-		# severities are spelled out because the reviewer skill's own output format
-		# uses upper case, and an unrecognised severity now fails validation rather
-		# than quietly demoting a critical finding to a footnote.
+		# mill owns the envelope; the stage prompt owns everything above it.
+		#
+		# `--json-schema` makes the shape a forced tool call, so this no longer has
+		# to argue a model out of narrating — an earlier version spent two pages on
+		# that and still lost, twice, on the first real run. What is left is the
+		# part a schema cannot express: what each field *means*, and when to block.
 		def envelope(prompt, invocation, nonce)
 			<<~ENVELOPE
 				#{prompt}
 
-				## Your final message
+				## Your verdict
 
-				Your last message must be one JSON object and nothing else. Not a sentence before
-				it, not a closing paragraph after it, not a fenced code block around it — mill
-				parses that message directly, so a stage that adds any of those fails validation
-				and costs itself a strike.
+				Finish by reporting your verdict through the structured output tool. mill reads it
+				directly; it is not a message to a person.
 
-				Everything you would otherwise want to say — what you found, what you did, what
-				you noticed along the way — goes in `summary`. That is what the narration is for,
-				and it is what mill puts in the log and the pull request body. There is no need to
-				repeat it outside the object, and no room to.
-
-				{
-				  "stage": #{stage.to_json},
-				  "invocation": #{invocation},
-				  "nonce": #{nonce.to_json},
-				  "status": "ok" | "blocked" | "failed",
-				  "summary": "one paragraph, for the log and the pull request body"#{envelope_extras}
-				}
-
-				`questions` must be present and non-empty when status is "blocked", and absent
-				otherwise. If you cannot proceed, block and ask — asking costs you nothing.
-				Never report "ok" for work you did not finish.
-
-				Emit the JSON object now, as your entire final message.
+				- `stage` is #{stage.to_json}, `invocation` is #{invocation}, and `nonce` is
+				  #{nonce.to_json}. Copy all three exactly. They are how mill knows this verdict
+				  came from this launch and not an earlier one.
+				- `status` is `ok` only for work you finished and verified. `blocked` if you need a
+				  human. `failed` if you could not do it and asking would not help.
+				- `questions` must be non-empty when `status` is `blocked`, and absent otherwise.
+				  Asking costs you nothing; guessing costs a wrong implementation nobody asked for.
+				- `summary` is one paragraph, and it is where your narration belongs — mill puts it
+				  in the log and the pull request body.#{envelope_extras}
 			ENVELOPE
 		end
 
@@ -132,14 +124,15 @@ module Mill
 
 		def envelope_extras
 			extras = []
-			extras << %(  "artifact": "path/to/file, relative to this directory") if config[:artifact]
-			extras << %(  "route": "plan" | "fast" | "iterate") if stage == 'triage'
-			extras << %(  "questions": ["..."])
+			extras << "\n- `artifact` is the path to what you produced, relative to this directory."  if config[:artifact]
+			extras << "\n- `route` is your decision: `plan`, `fast`, or `iterate`." if stage == 'triage'
 			if stage.start_with?('review:')
-				extras << %(  "objections": [{ "severity": "critical|high|medium|low", ) +
-					%("claim": "one line", "notes": "files, lines, and the argument" }])
+				extras << "\n- `objections` is what you found. `severity` is one of `critical`, `high`, " \
+					"`medium`, `low` — only `critical` and `high` send the work back, so calibrate " \
+					"honestly. `claim` is one line; `notes` carries the files, the lines, and the " \
+					'argument, and is what the next agent actually reads.'
 			end
-			extras.empty? ? '' : ",\n#{extras.join(",\n")}"
+			extras.join
 		end
 	end
 end

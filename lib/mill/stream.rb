@@ -14,7 +14,7 @@ module Mill
 		}.freeze
 
 		attr_reader :session_id, :model, :last_output_at, :pending_tool_at,
-			:rate_limited_at, :result, :raw_verdict, :permission_denials
+			:rate_limited_at, :result, :raw_verdict, :structured_verdict, :permission_denials
 
 		def initialize(clock: -> { Mill::Clock.awake })
 			@clock = clock
@@ -44,6 +44,10 @@ module Mill
 		rescue JSON::ParserError, EncodingError
 			nil		# a partial or mis-encoded line is not a failure
 		end
+
+		# What mill validates: the parsed structured output when the CLI produced
+		# one, and the final message otherwise.
+		def verdict_payload = @structured_verdict || @raw_verdict
 
 		# The four counts the design requires. Cache reads dominated fresh input
 		# 7182:3 in the spike, so recording only in/out understates flow by ~99%.
@@ -119,10 +123,14 @@ module Mill
 			@rate_limited_at = status == 'allowed' ? nil : @clock.call
 		end
 
+		# With `--json-schema` the CLI returns the verdict already parsed, in
+		# `structured_output`. `result` still carries the same object as a string;
+		# mill prefers the parsed one and keeps the string for the log.
 		def on_result(msg)
 			@result = msg
 			@final_usage = msg[:usage] if msg[:usage]
 			@raw_verdict = msg[:result]
+			@structured_verdict = msg[:structured_output]
 		end
 
 		def blocks(content) = content.is_a?(Array) ? content.select { |b| b.is_a?(Hash) } : []
