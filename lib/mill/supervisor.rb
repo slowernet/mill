@@ -70,7 +70,79 @@ module Mill
 			run_id
 		end
 
+		# One thread per run: a route walk takes tens of minutes, and a supervisor
+		# that walked it would claim one item and then stop reconciling.
+		def start(run_id, walker: nil, answers: [])
+			walk = walker || ->(id) { walk(id, answers: answers) }
+			@threads[run_id] = Thread.new do
+				finish(run_id, walk.call(run_id))
+			rescue StandardError => e
+				# A dead runner thread must not leave a run marked running forever.
+				# That is a concurrency slot nothing else releases.
+				warn "run #{run_id} thread died: #{e.class}: #{e.message}"
+				@db[:runs].where(id: run_id).update(status: 'failed', finished_at: Mill.now)
+				finish(run_id, { stage: nil, status: :failed, reason: e.message, questions: [] })
+			ensure
+				@threads.delete(run_id)
+			end
+		end
+
+		def running?(run_id) = @threads[run_id]&.alive? || false
+
+		def finish(run_id, state)
+			row = @db[:runs].where(id: run_id).first or return
+
+			announce(row, state)
+			@board&.want(run_id, row[:status])
+			teardown(run_id)
+		end
+
+		# A blocked run keeps its worktree indefinitely: mill needs it to resume,
+		# and a timer should not destroy the thing you have to answer a question
+		# about.
+		def teardown(run_id)
+			row = @db[:runs].where(id: run_id).first or return
+			return unless %w[done failed killed].include?(row[:status])
+
+			repo = @db[:repos].where(id: row[:repo_id]).first
+			path = row[:worktree_path]
+			return if path.nil? || !Dir.exist?(path)
+
+			@git.worktree_remove(repo[:local_path], path)
+			@git.run(repo[:local_path], 'worktree', 'prune')
+		rescue Mill::Git::Error => e
+			warn "run #{run_id} worktree not removed: #{e.message}"
+		end
+
 		private
+
+		def walk(run_id, answers: [])
+			run = Mill::Run.adopt(run_id, answers: answers, db: @db)
+			run.on_identity = ->(pgid) { @own_pgids << pgid }
+			run.call
+			@db[:runs].where(id: run_id).first
+		end
+
+		def announce(row, state)
+			repo = @db[:repos].where(id: row[:repo_id]).first
+			body = case row[:status]
+			when 'blocked' then blocked_body(state)
+			when 'done' then "Opened ##{row[:pr_number]}."
+			else
+				"This run #{row[:status]}: #{state[:reason]}. Nothing was merged and no further " \
+					'work starts on it. Fix the cause and set Status back to `Ready`.'
+			end
+			comment(repo, row[:subject_number], body)
+		end
+
+		def blocked_body(state)
+			questions = Array(state[:questions])
+			return "Blocked at `#{state[:stage]}`: #{state[:reason]}." if questions.empty?
+
+			["Blocked at `#{state[:stage]}`: #{state[:reason]}.", '',
+			 'Answer in a reply and this run continues from where it stopped.', '',
+			 *questions.map { |question| "- #{question}" }].join("\n")
+		end
 
 		# Running or blocked: a blocked run keeps its worktree, and therefore its
 		# branch, until it is answered or killed.

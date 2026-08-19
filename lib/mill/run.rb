@@ -60,13 +60,20 @@ module Mill
 		# Answering a blocked run. Nothing restarts: the blocked stage resumes its
 		# own session with the answers injected, and the route carries on from
 		# there. Plan 3 triggers this from a comment; by hand it is rake mill:answer.
-		def self.resume(run_id, answers, db: Mill.db, claude: Mill::Claude, &announce)
+		# Builds a Run from a row that already exists. Nothing is re-resolved, so
+		# adopting a run cannot pick a different branch than the one it has been
+		# working on.
+		def self.adopt(run_id, answers: [], db: Mill.db, claude: Mill::Claude)
 			row = db[:runs].where(id: run_id).first or raise Mill::Error, "no run #{run_id}"
 			repo = db[:repos].where(id: row[:repo_id]).first
 
 			run = allocate
 			run.send(:initialize_resumed, row, repo, db, claude, Array(answers))
-			run.call(&announce)
+			run
+		end
+
+		def self.resume(run_id, answers, db: Mill.db, claude: Mill::Claude, &announce)
+			adopt(run_id, answers: answers, db: db, claude: claude).call(&announce)
 		end
 
 		def call(launcher: nil, &announce)
@@ -114,7 +121,9 @@ module Mill
 			@repo = "#{repo[:owner]}/#{repo[:name]}"
 			@answers = answers
 			@questions = []
-			@resumed = true
+			# A fresh run has nothing to restore; a blocked one has verdicts the
+			# resumed stage needs handed back to it.
+			@resumed = row[:status] == 'blocked'
 		end
 
 		def fail_with(problem, questions)

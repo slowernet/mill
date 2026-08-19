@@ -193,5 +193,111 @@ module Mill
 			assert_raises(Mill::Git::Error) { claim(sup) }
 			assert_equal 0, db[:runs].count
 		end
+
+		# --- running, announcing, tearing down -----------------------------------
+
+		def state(status, questions: [], stage: 'plan')
+			{ stage: stage, status: status, reason: 'scripted', questions: questions }
+		end
+
+		def bodies(calls)
+			calls.select { |args| args.first(2) == %w[issue comment] }.map { |args| args.join(' ') }
+		end
+
+		def test_a_finished_run_is_torn_down_and_its_branch_freed
+			sup = supervisor
+			run_id = claim(sup)
+			worktree = db[:runs].where(id: run_id).get(:worktree_path)
+			db[:runs].where(id: run_id).update(status: 'done', pr_number: 7)
+
+			sup.finish(run_id, state(:done))
+
+			refute_path_exists worktree
+			refute_includes Mill::Git.checked_out_branches(@clone), '1-a-feature'
+		end
+
+		# mill needs the worktree to resume, and a timer should not destroy the
+		# thing you have to answer a question about.
+		def test_a_blocked_run_keeps_its_worktree
+			sup = supervisor
+			run_id = claim(sup)
+			worktree = db[:runs].where(id: run_id).get(:worktree_path)
+			db[:runs].where(id: run_id).update(status: 'blocked')
+
+			sup.finish(run_id, state(:blocked, questions: ['Which spec is authoritative?']))
+
+			assert_path_exists worktree
+		end
+
+		# The questions are the only channel that reaches a person once you have
+		# walked away.
+		def test_a_blocked_run_posts_its_questions
+			calls = []
+			sup = supervisor(comments: calls)
+			run_id = claim(sup)
+			db[:runs].where(id: run_id).update(status: 'blocked')
+
+			sup.finish(run_id, state(:blocked, questions: ['Which spec is authoritative?']))
+
+			assert_match(/Which spec is authoritative\?/, bodies(calls).last)
+		end
+
+		def test_a_blocked_run_with_no_questions_still_says_why
+			calls = []
+			sup = supervisor(comments: calls)
+			run_id = claim(sup)
+			db[:runs].where(id: run_id).update(status: 'blocked')
+
+			sup.finish(run_id, state(:blocked))
+
+			assert_match(/Blocked at `plan`/, bodies(calls).last)
+		end
+
+		def test_a_finished_run_names_its_pull_request
+			calls = []
+			sup = supervisor(comments: calls)
+			run_id = claim(sup)
+			db[:runs].where(id: run_id).update(status: 'done', pr_number: 7)
+
+			sup.finish(run_id, state(:done))
+
+			assert_match(/#7/, bodies(calls).last)
+		end
+
+		def test_a_failed_run_says_so
+			calls = []
+			sup = supervisor(comments: calls)
+			run_id = claim(sup)
+			db[:runs].where(id: run_id).update(status: 'failed')
+
+			sup.finish(run_id, state(:failed))
+
+			assert_match(/failed/i, bodies(calls).last)
+		end
+
+		def test_a_run_thread_is_tracked_while_it_walks
+			sup = supervisor
+			run_id = claim(sup)
+			gate = Queue.new
+			thread = sup.start(run_id, walker: ->(_id) { gate.pop; state(:done) })
+
+			assert sup.running?(run_id)
+
+			gate << :go
+			thread.join
+
+			refute sup.running?(run_id)
+		end
+
+		# A dead runner thread must not leave a run marked running forever, which
+		# is a slot held against the cap that nothing else releases.
+		def test_a_thread_that_dies_leaves_the_run_failed_rather_than_running
+			sup = supervisor
+			run_id = claim(sup)
+			sup.start(run_id, walker: ->(_id) { raise 'boom' }).join
+
+			assert_equal 'failed', db[:runs].where(id: run_id).get(:status)
+			refute sup.running?(run_id)
+		end
 	end
 end
