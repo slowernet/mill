@@ -1411,7 +1411,7 @@ Over time these numbers establish what each stage normally uses, so an unusual r
 and when mill adds per-token billing the history is already there.
 
 Front-end conventions — the layout contract, design tokens, the component catalog, and how the
-log tail polls — are in `docs/reference/admin-ui-frontend.md`.
+log tail polls — are in `docs/notes/admin-ui-frontend.md`.
 
 ## Killing a run and tearing it down
 

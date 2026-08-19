@@ -40,6 +40,15 @@ rake mill:answer[2,"..."]        # answer a blocked run and resume it
 - [Setup runbook](docs/reference/setup.md) — the board, the tokens, the permission rulesets,
   and a scratch repo to rehearse against
 
+## Notes
+
+`docs/notes/` holds work that is neither a spec, a plan, nor a rule to follow — investigations,
+contracts for things not yet built, and comparisons worth keeping. Nothing here is binding.
+
+- [The admin UI's frontend contract](docs/notes/admin-ui-frontend.md) — layout, design tokens,
+  the component catalog, and how the log tail polls. Plan 4 builds against it.
+- [Agent convergence strategies](docs/notes/2026-08-13-agent-convergence-strategies.md)
+
 ## Stack
 
 Ruby, Roda, Sequel, SQLite, Puma, Minitest, vanilla JS, stdlib for nearly everything else.
