@@ -27,6 +27,31 @@ module Mill
 			result.out
 		end
 
+		# Cloning has no repository to run inside, so it cannot go through `run`.
+		# It stays here anyway: this module is the only place mill runs git.
+		def self.clone(url, path)
+			FileUtils.mkdir_p(File.dirname(path))
+			_out, err, status = Open3.capture3('git', 'clone', url.to_s, path.to_s)
+			raise Error, "git clone failed: #{Mill.utf8(err).strip[0, 300]}" unless status.success?
+
+			path
+		end
+
+		# Only tests need this; it lives here so that they, too, run no git of
+		# their own.
+		def self.clone_init(path)
+			FileUtils.mkdir_p(path)
+			run!(path, 'init', '--initial-branch=main')
+			run!(path, 'config', 'user.email', 'test@example.com')
+			run!(path, 'config', 'user.name', 'Test')
+			path
+		end
+
+		def self.origin(repo_path)
+			result = run(repo_path, 'remote', 'get-url', 'origin')
+			result.ok ? result.out.strip : nil
+		end
+
 		# The spec is the file the branch *adds* under the prefix, found by diffing
 		# rather than by reading a path out of prose. `base...branch` is the
 		# three-dot form: what the branch added since it diverged, not everything
