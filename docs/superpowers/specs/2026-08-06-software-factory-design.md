@@ -137,14 +137,14 @@ Plans 1 and 2 are complete, and a real pull request came out of the far end on 2
 | `Mill::Rules`, `Mill::Doctor` | Built. Rulesets written from one definition and checked against it |
 | Stage prompts, `mill:implement`, `mill:pr`, `mill-headless` | Built for the `plan` route only |
 | The `plan` route, end to end | **Demonstrated.** `slowernet/mill-scratch#2`, 18 minutes, no strikes |
-| `Mill::Poller` | Not built. No board reads, no comment cursors, no triggers |
-| `Mill::Supervisor` | Not built. No repo preparation, worktree lifecycle, concurrency cap, lock clearing, or reaping |
+| `Mill::Poller` | Built. Reconciles the board, sweeps comments behind a transactional cursor sent to GitHub as `since`, dispatches an answer to a blocked run. Two of five triggers dispatch; the rest record `no_route` |
+| `Mill::Supervisor` | Built, minus the power assertion. Prepares repos, resolves or makes the clone, claims to a cap, clears stale locks, walks each run in its own thread, tears down, and reaps against a verified identity |
 | Sleep and wake | Clock pair built and its premise measured; nothing reads it. No settle window, no stall detector, no power assertion |
 | The Linux server, which is the primary target | **Never run.** Every line of mill has only ever executed on macOS, including all fourteen boundary tests |
-| Web UI | Not built. No routes, no kill switch, no log view |
+| Web UI | Boot path only. `app.rb`, `config.ru` and `config/puma.rb` exist and `GET /` reports worker health; no run list, kill switch or log view |
 | `fast` and `iterate` routes | Not built. `diagnose`, `implement:fast` and `push` have config and rulesets but no prompts, and have never run |
-| Board writes, comments | `Mill::Github#comment` exists; nothing calls it. mill has never written a Status |
-| Secrets injection, scoped `GH_TOKEN` | Not built. `Mill::Rules.env_for` is the hook and carries one variable |
+| Board writes, comments | Built. Status on claim, block, resume and finish, re-driven from `desired_board_status` when a write did not land. Questions, block reasons and outcomes post to the subject |
+| Secrets injection, scoped `GH_TOKEN` | Built, never exercised against a repo that declares any — `mill-scratch` sets `secrets: []`. Values under 16 characters reach the stage but are never redacted, because the scrubber would corrupt the log |
 | Deep review, evidence requirement, retention, CI-fix trigger | Not built. `ci_fixes` and `events` exist as tables and are unused |
 
 **Built but never exercised**, which is a different thing from built:
@@ -2073,7 +2073,7 @@ evasion of a permission control; containment held on the honour system as well a
 
 ### Plan 3a — Autonomy
 
-**Not started.** The clock pair exists and nothing reads it.
+**Done, 2026-08-19.** See the rehearsal record below.
 
 - `Mill::Workers` and the Roda host: `app.rb`, `config.ru`, both threads under one supervising
   loop that restarts either with backoff, `GET /` reporting whether both heartbeats are fresh,
@@ -2093,6 +2093,44 @@ evasion of a permission control; containment held on the honour system as well a
 Only two of the five triggers dispatch, because only the `plan` route exists: an item that is
 `Ready` with no active run, and a comment on a `Blocked` item. The sweep itself is built in full,
 so Plan 5 adds dispatch and touches none of it.
+
+**Done, 2026-08-19.** Two pull requests nobody opened by hand: `mill-scratch#4` from a clean run,
+and `#6` from a run that blocked at `plan`, asked three questions, took an answer from a comment and
+resumed its own session. Zero strikes on either. Then a crash test: mill killed outright mid-stage,
+twice, each time leaving a live process group orphaned — recovered both times, charging an attempt
+and no strike, and re-entering the stage it was in rather than the top of the route. And nineteen
+and a half hours running unattended overnight, surviving eight transient API failures with both
+threads alive in the morning and about 12% of the GraphQL budget consumed per hour at a 30-second
+tick, which is why the default tick is now 60.
+
+**What the rehearsal cost, and what it bought.** Ten defects, six of them in code written that day,
+and the fixture suite could not have caught any of the six. That is the finding worth keeping.
+
+Four of the six were the same shape: **each component correct alone, each tested alone, the defect
+in the handoff.** `Mill::Workers` assembled a supervisor without a board, so mill would have run the
+whole pipeline and never written a Status — and since a comment only means an answer while the board
+says `Blocked`, no blocked run could ever have been resumed. `Supervisor#walk` returned a database
+row where `finish` expected the runner's state, so the first real block posted ``Blocked at ``: .``
+to the issue: mill asked three good questions and threw all of them away, which is worse than a
+crash, because the board says `Blocked`, the worktree waits, and there is no way to learn what for.
+Nothing owned the `blocked → running` transition, so a resumed run stayed invisible to the reaper
+for the rest of its route. And a restarted run began at the top of its route, re-running every stage
+it had banked.
+
+The other two: doctor passed a database three migrations behind, because it checked that tables
+existed and the missing thing was a column; and the log scrubber would have corrupted the
+`stream-json` it parses back, given a secrets file with a short value like `DEBUG=true`.
+
+Two runbook steps also turned out not to work as written — the built-in `Status` field can be
+neither deleted nor recreated, and disabling the board's workflows is the one setup step with no
+API at all.
+
+**The lesson for the next plan.** An adversarial review of this plan's code, before a line of it
+existed, found twelve defects including four that would have stopped the factory silently. It
+caught that two `Mill::Supervisor` instances would make the reaper kill healthy stages. The fix was
+to share one instance — and the shared instance was built without a board, which is finding 6.
+Reviews catch the layer they are looking at. Only running the assembled thing catches the seam
+below it.
 
 ### Plan 3b — Resilience
 
