@@ -12,13 +12,34 @@ module Mill
 		end
 
 		# The smallest thing shaped like a Mill::Claude::Attempt.
-		def attempt(status: 'ok', valid: true, success: true, resume_failed: false)
+		def attempt(status: 'ok', valid: true, success: true, resume_failed: false,
+			rate_limited: false)
 			verdict = Object.new
 			verdict.define_singleton_method(:valid?) { valid }
 			verdict.define_singleton_method(:status) { status }
 			result = Object.new
 			result.define_singleton_method(:success?) { success }
-			Struct.new(:verdict, :result, :resume_failed?).new(verdict, result, resume_failed)
+			Struct.new(:verdict, :result, :resume_failed?, :rate_limited?)
+				.new(verdict, result, resume_failed, rate_limited)
+		end
+
+		# A launch the subscription refused never ran. It exits non-zero, so
+		# classified after :crashed it would take a strike for a door mill could not
+		# open — measured live 2026-08-20, when a five-hour window closed mid-run.
+		def test_a_refused_launch_is_rate_limited_not_crashed
+			assert_equal :rate_limited,
+				Mill::Ledger.classify(attempt(success: false, rate_limited: true))
+		end
+
+		def test_a_rate_limited_launch_costs_neither_an_attempt_nor_a_strike
+			assert_equal({ attempt: 0, strike: 0 }, Mill::Ledger::COST[:rate_limited])
+		end
+
+		# The limit outranks a session that would not reopen: mill never got far
+		# enough to try the session.
+		def test_the_limit_outranks_a_failed_resume
+			assert_equal :rate_limited,
+				Mill::Ledger.classify(attempt(success: false, rate_limited: true, resume_failed: true))
 		end
 
 		# --- classification -------------------------------------------------

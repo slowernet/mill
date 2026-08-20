@@ -22,6 +22,10 @@ module Mill
 		MAX_STRIKES = 2
 		MAX_ATTEMPTS = 8
 		MAX_INTERRUPTIONS = 3
+		# A launch the subscription refused inserts no row, so this cap is counted in
+		# the runner rather than in the database.
+		MAX_RATE_LIMIT_WAITS = 4
+		MAX_RATE_LIMIT_PAUSE = 3600
 
 		# A strike means the work was wrong. Everything the machine did to a stage
 		# is free — a laptop that slept, a socket that died, a lock file left by a
@@ -45,12 +49,21 @@ module Mill
 			rate_limited: { attempt: 0, strike: 0 }
 		}.freeze
 
-		# A process that died outranks whatever it managed to emit: mill has no
-		# trustworthy account of what happened either way.
-		# Checked before anything else: a session the CLI would not reopen is not the
-		# stage failing, and it does not present as a crash either — the process
+		# Order matters, and the first three are all things the machine did rather
+		# than the stage.
+		#
+		# A launch the subscription refused never ran, and it exits non-zero — so
+		# without checking it first it reads as a crash and takes a strike, which
+		# charges a stage for a door mill could not open. Measured 2026-08-20: a
+		# five-hour window closed mid-run and `plan` was struck for it.
+		#
+		# A session the CLI would not reopen is not a crash either; the process
 		# exits cleanly having done nothing.
+		#
+		# Then a process that died outranks whatever it managed to emit, because
+		# mill has no trustworthy account of what happened either way.
 		def self.classify(attempt)
+			return :rate_limited if attempt.rate_limited?
 			return :resume_failed if attempt.resume_failed?
 			return :crashed unless attempt.result.success?
 			return :no_verdict unless attempt.verdict.valid?

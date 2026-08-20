@@ -11,12 +11,14 @@ module Mill
 
 		attr_reader :run_id, :state
 
-		def initialize(db:, run_id:, launcher:, github: nil, context: {})
+		def initialize(db:, run_id:, launcher:, github: nil, context: {}, pause: method(:sleep))
 			@db = db
 			@run_id = run_id
 			@launcher = launcher
 			@github = github
 			@context = context
+			# Injected so a test can assert the wait without taking it.
+			@pause = pause
 			@ledger = Mill::Ledger.new(db, run_id)
 			@sessions = {}
 			@artifacts = {}
@@ -134,6 +136,8 @@ module Mill
 				@sessions[@stage] = nil
 				@ledger.charge(stage: @stage, outcome: :resume_failed, number: number, attempt: attempt)
 				:rerun
+			when :rate_limited
+				wait_out_the_limit(attempt)
 			when :blocked
 				@ledger.charge(stage: @stage, outcome: :blocked, number: number, attempt: attempt)
 				halt(:blocked, "#{@stage} asked a question", questions: attempt.verdict.questions)
@@ -144,6 +148,39 @@ module Mill
 				@ledger.charge(stage: @stage, outcome: outcome, number: number, attempt: attempt)
 				:rerun
 			end
+		end
+
+		# A launch the subscription refused costs nothing and produced nothing, so
+		# there is no row to insert and no counter in the database to bound it —
+		# which is why the cap is held here. Free is not unlimited.
+		#
+		# Waiting in this thread is correct rather than lazy: the run is waiting,
+		# not working, and the supervisor leaves a run alone while its thread is
+		# alive. Retrying straight away would be a hot loop against a door that
+		# does not open for hours.
+		def wait_out_the_limit(attempt)
+			@rate_limit_waits = @rate_limit_waits.to_i + 1
+			if @rate_limit_waits > Mill::Ledger::MAX_RATE_LIMIT_WAITS
+				return halt(:blocked, "#{@stage} has been rate limited " \
+					"#{Mill::Ledger::MAX_RATE_LIMIT_WAITS} times without getting a launch. " \
+					'Nothing was charged against it — the subscription refused the launch, the ' \
+					'stage did not fail. Reply here to try again.')
+			end
+
+			@ledger.charge(stage: @stage, outcome: :rate_limited)
+			seconds = self.class.rate_limit_pause(attempt.rate_limit_resets_at)
+			warn "#{@stage} is rate limited; waiting #{seconds}s for the window"
+			@pause.call(seconds)
+			:rerun
+		end
+
+		# Never shorter than a minute in case the reset has just passed, never
+		# longer than the cap in case the clocks disagree, and the cap when the CLI
+		# did not say when the window reopens.
+		def self.rate_limit_pause(resets_at, now: Mill.now)
+			return Mill::Ledger::MAX_RATE_LIMIT_PAUSE if resets_at.nil?
+
+			[[resets_at.to_i - now, 60].max, Mill::Ledger::MAX_RATE_LIMIT_PAUSE].min
 		end
 
 		def advance(attempt, number)

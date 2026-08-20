@@ -315,6 +315,9 @@ module Mill
 			stream = Object.new
 			stream.define_singleton_method(:session_id) { 'sess-1' }
 			stream.define_singleton_method(:resume_failed?) { false }
+			stream.define_singleton_method(:rate_limited?) { false }
+			stream.define_singleton_method(:rate_limit_resets_at) { nil }
+			stream.define_singleton_method(:resume_failed?) { false }
 			stream.define_singleton_method(:tokens) { { tokens_in: 1, tokens_out: 2 } }
 			stream.define_singleton_method(:model) { 'claude-sonnet-5' }
 

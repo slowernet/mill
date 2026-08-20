@@ -22,7 +22,7 @@ module Mill
 		# The smallest thing shaped like a Mill::Claude::Attempt.
 		def scripted(status: 'ok', valid: true, success: true, objections: [], questions: [],
 			artifact: nil, session: 'sess-1', summary: 'did the thing', title: 'A title', body: 'A body',
-			resume_failed: false)
+			resume_failed: false, rate_limited: false, resets_at: nil)
 			verdict = Object.new
 			verdict.define_singleton_method(:valid?) { valid }
 			verdict.define_singleton_method(:status) { status }
@@ -38,6 +38,8 @@ module Mill
 			stream = Object.new
 			stream.define_singleton_method(:session_id) { session }
 			stream.define_singleton_method(:resume_failed?) { resume_failed }
+			stream.define_singleton_method(:rate_limited?) { rate_limited }
+			stream.define_singleton_method(:rate_limit_resets_at) { resets_at }
 			stream.define_singleton_method(:tokens) { { tokens_in: 1, tokens_out: 2 } }
 			stream.define_singleton_method(:model) { 'claude-opus-5' }
 
@@ -153,6 +155,78 @@ module Mill
 
 			assert_equal 0, Mill::Ledger.new(db, runner.run_id).strikes('triage')
 			assert_equal 1, Mill::Ledger.new(db, runner.run_id).attempts('triage')
+		end
+
+		# --- the subscription said no ---------------------------------------
+
+		# A launch the subscription refused never ran. It exits non-zero, so without
+		# being classified first it reads as a crash and takes a strike — charging a
+		# stage for a door mill could not open. Measured live 2026-08-20.
+		def test_a_rate_limited_launch_costs_no_strike
+			waits = []
+			runner = runner_with_pause(waits,
+				[scripted(rate_limited: true, success: false)] + clean_run)
+			runner.call
+
+			assert_equal 0, Mill::Ledger.new(db, runner.run_id).strikes('triage')
+		end
+
+		# attempt: 0 in the ledger, so it leaves no row: nothing happened.
+		def test_a_rate_limited_launch_leaves_no_attempt_behind
+			waits = []
+			runner = runner_with_pause(waits,
+				[scripted(rate_limited: true, success: false)] + clean_run)
+			runner.call
+
+			assert_equal 1, Mill::Ledger.new(db, runner.run_id).attempts('triage')
+			assert_equal [1, 1], @calls.first(2).map { |c| c[:number] },
+				'the refused launch must not consume an attempt number'
+		end
+
+		# Retrying straight away is a hot loop against a door that will not open for
+		# hours, so it waits for the window the CLI named.
+		def test_it_waits_for_the_window_the_cli_named
+			waits = []
+			resets = Mill.now + 900
+			runner = runner_with_pause(waits,
+				[scripted(rate_limited: true, success: false, resets_at: resets)] + clean_run)
+			runner.call
+
+			assert_equal 1, waits.length
+			assert_in_delta 900, waits.first, 5
+		end
+
+		def test_an_unknown_reset_waits_the_cap
+			waits = []
+			runner = runner_with_pause(waits,
+				[scripted(rate_limited: true, success: false)] + clean_run)
+			runner.call
+
+			assert_equal Mill::Ledger::MAX_RATE_LIMIT_PAUSE, waits.first
+		end
+
+		def test_a_reset_already_past_still_leaves_a_minute
+			assert_equal 60, Mill::Runner.rate_limit_pause(Mill.now - 500)
+		end
+
+		# Free is not unlimited. Every strike-free path has its own cap.
+		def test_endless_rate_limiting_blocks_rather_than_waiting_forever
+			waits = []
+			refused = Array.new(Mill::Ledger::MAX_RATE_LIMIT_WAITS + 1) do
+				scripted(rate_limited: true, success: false)
+			end
+			runner = runner_with_pause(waits, refused)
+
+			assert_equal :blocked, runner.call
+			assert_match(/rate limited/i, runner.state[:reason])
+			assert_equal 0, Mill::Ledger.new(db, runner.run_id).strikes('triage')
+		end
+
+		# A runner whose pause is recorded rather than taken.
+		def runner_with_pause(waits, script)
+			runner = runner_for(script)
+			runner.instance_variable_set(:@pause, ->(seconds) { waits << seconds })
+			runner
 		end
 
 		# --- failure and resume ---------------------------------------------

@@ -14,7 +14,8 @@ module Mill
 		}.freeze
 
 		attr_reader :session_id, :model, :last_output_at, :pending_tool_at,
-			:rate_limited_at, :result, :raw_verdict, :structured_verdict, :permission_denials
+			:rate_limited_at, :rate_limit_resets_at, :result, :raw_verdict, :structured_verdict,
+			:permission_denials
 
 		def initialize(clock: -> { Mill::Clock.awake })
 			@clock = clock
@@ -130,11 +131,20 @@ module Mill
 		# would leaving the stamp in place once the limit lifts, which is why an
 		# "allowed" event clears it. A stage throttled at minute 2 and wedged at
 		# minute 20 must still be reaped.
+		# `resetsAt` is kept because it is the only thing that says how long to
+		# wait. Without it a rejected launch is retried immediately, which is a hot
+		# loop against a door that will not open for hours.
 		def on_rate_limit(msg)
 			status = msg.dig(:rate_limit_info, :status)
 			return if status.nil?
 
-			@rate_limited_at = status == 'allowed' ? nil : @clock.call
+			if status == 'allowed'
+				@rate_limited_at = nil
+				@rate_limit_resets_at = nil
+			else
+				@rate_limited_at = @clock.call
+				@rate_limit_resets_at = msg.dig(:rate_limit_info, :resetsAt)
+			end
 		end
 
 		# With `--json-schema` the CLI returns the verdict already parsed, in
