@@ -480,8 +480,11 @@ module Mill
 		end
 
 		# Interrupting without re-entering leaves the run marked running with no
-		# thread, which nothing else ever picks up.
+		# thread, which nothing else ever picks up. Cap of one, because the
+		# interrupted run holds its own slot: restarting re-enters that run, it
+		# does not add another, so a full factory must not stop the restart.
 		def test_an_interrupted_run_is_started_again
+			ENV['MILL_CONCURRENCY'] = '1'
 			sup = supervisor
 			started = watching_restarts(sup)
 			run_id = running_run(sup, pid: 999_999, started_at: Mill.now)

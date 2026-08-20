@@ -51,6 +51,54 @@ module Mill
 			end
 		end
 
+		# The boot-time check exists for a pgid read back from the database, which
+		# may have crossed a reboot. This group was spawned two lines ago and this
+		# process still holds its wait_thr — there is no reboot it could have
+		# crossed, and no stranger it could be. On a host that cannot read its own
+		# boot time, declining to signal it leaves the group running with nobody
+		# holding its identity, and parks the raise behind the child it would not
+		# kill.
+		#
+		# The fix belongs in announce_spawn, which can kill the group it just
+		# created. Spawn.reap's boot gate must NOT be loosened to suit this test:
+		# Supervisor#reap feeds it pgids straight out of the database, and
+		# test_hostile_input pins it at :unknown_boot for exactly that reason.
+		def test_the_group_dies_even_when_the_boot_time_is_unreadable
+			# Stubbed on this thread, not inside the worker: the worker is the thing
+			# that may hang, and a restore that hangs with it leaves every later
+			# test in this process reading a nil boot time.
+			with_unreadable_boot_time do
+				with_log do |log, dir|
+					pgid = nil
+					finished = nil
+					spawn = spawn_in(log, dir, on_spawn: lambda { |_pid, group, *|
+						pgid = group
+						raise Mill::Error, 'database is locked'
+					})
+					thread = Thread.new do
+						spawn.run(['ruby', '-e', 'sleep 30'])
+						:no_error
+					rescue Mill::Error
+						:raised
+					end
+
+					begin
+						finished = thread.join(20)
+
+						refute_nil pgid, 'the callback never saw a process group'
+						refute_nil finished, 'run is still blocked on a group it declined to kill'
+						assert_equal :raised, thread.value
+						assert_raises(Errno::ESRCH) { Process.kill(0, -pgid) }
+					ensure
+						# Only when the fix is absent — killing a pgid that was already
+						# reaped is the recycling hazard this whole file is about.
+						Mill::Spawn.signal(pgid, 'KILL') if pgid && finished.nil?
+						thread.join(5)
+					end
+				end
+			end
+		end
+
 		def test_tees_the_stream_and_parses_it_at_once
 			with_log do |log, dir|
 				result = spawn_in(log, dir).run(fake_stage('plan_ok'))
@@ -316,6 +364,23 @@ module Mill
 		end
 
 		private
+
+		# Minitest 6 ships no stub, so this restores by hand. Every test in the
+		# suite shares one process and one Mill::Clock, so a restore that does not
+		# happen is a nil boot time for everything that runs after it.
+		def with_unreadable_boot_time
+			raise 'nested stub would restore the stub itself' if
+				Mill::Clock.singleton_class.method_defined?(:readable_boot_time)
+
+			Mill::Clock.singleton_class.send(:alias_method, :readable_boot_time, :boot_time)
+			Mill::Clock.define_singleton_method(:boot_time) { nil }
+			begin
+				yield
+			ensure
+				Mill::Clock.singleton_class.send(:alias_method, :boot_time, :readable_boot_time)
+				Mill::Clock.singleton_class.send(:remove_method, :readable_boot_time)
+			end
+		end
 
 		def with_cap(bytes)
 			original = Mill::Spawn::LOG_CAP

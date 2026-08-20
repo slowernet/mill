@@ -42,6 +42,18 @@ module Mill
 				Mill::Ledger.classify(attempt(success: false, rate_limited: true, resume_failed: true))
 		end
 
+		# rate_limited? reports the last rate-limit event the stream saw, not the
+		# fate of the launch: an "allowed" heartbeat clears it, and a refusal sets
+		# it again. A stage refused at minute 2, that then got its launch, exited
+		# 0 and returned a valid verdict, still carries the flag whenever the
+		# result line arrives before the next heartbeat could clear it. Reading
+		# the flag as "this launch was refused" throws that finished work away,
+		# and charges no attempt — so the relaunch reuses the log filename and
+		# overwrites the log of the run that succeeded.
+		def test_a_throttled_stage_that_still_finished_keeps_its_work
+			assert_equal :ok, Mill::Ledger.classify(attempt(success: true, rate_limited: true))
+		end
+
 		# --- classification -------------------------------------------------
 
 		def test_a_clean_stage_is_ok

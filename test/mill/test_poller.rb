@@ -384,17 +384,45 @@ module Mill
 
 		# A failed start must not swallow the answer: fail_event is the
 		# compensation for having marked it processed first.
+		#
+		# The supervisor is real here, because the bug is in the order it does two
+		# things. `start` calls `resumed`, which flips the row to running and only
+		# then tells the board — and a project whose Status field has no matching
+		# option raises out of that second call. The old fake raised before
+		# touching the row, so it could never see this.
+		#
+		# Both assertions have to be here. The event alone reads pending while the
+		# answer is already lost; the second sweep alone would pass only if the
+		# repair happens in the poller. A fix in either place satisfies both.
 		def test_a_failed_start_leaves_the_answer_to_be_retried
 			repo_id = prepared_repo
-			create_run(repo_id: repo_id, subject_number: 1, status: 'blocked')
+			run_id = create_run(repo_id: repo_id, subject_number: 1, status: 'blocked')
 			pending_event(repo_id, 1)
-			sup = FakeSupervisor.new
-			def sup.start(*) = raise(Mill::Error, 'nope')
-			sweeping(sup: sup).dispatch
+			sweeping(sup: supervisor_with_a_broken_board).dispatch
 			row = db[:events].where(gh_node_id: 'IC_99').first
 
 			assert_equal 'pending', row[:state]
 			assert_nil row[:processed_at]
+			assert_equal 'blocked', db[:runs].where(id: run_id).get(:status),
+				'a run left running with no thread holds a slot nothing releases'
+
+			retried = FakeSupervisor.new
+			sweeping(sup: retried).dispatch
+
+			assert_equal [run_id], retried.started, 'the answer was never delivered'
+			assert_equal ['The second one.'], retried.answers[run_id]
+		end
+
+		# Mill::Board#want raises Mill::Error when the project has no option for
+		# the Status it was asked for. Everything else about this supervisor is
+		# the real one, including the order in which `resumed` writes and calls.
+		def supervisor_with_a_broken_board
+			board = Object.new
+			board.define_singleton_method(:want) do |*|
+				raise Mill::Error, 'the project\'s Status field has no `In progress` option'
+			end
+			Mill::Supervisor.new(db: db, github: Mill::Github.new(runner: ->(_args) { '' }),
+				board: board)
 		end
 
 		# One walker per run. A retried event must not become a second thread in

@@ -62,7 +62,9 @@ Prohibitions only. Breaking one is a bug regardless of what a task appears to as
 - Never write a call to `gh pr merge`. mill does not merge.
 - Never post a comment except through `Mill::Github`.
 - Never add a retry path around the two-strikes-per-stage counter, and never charge a strike for something the machine did to a stage. The ledger in the design doc is the only place that decides.
-- Never signal a bare pid, and never signal at all without checking the recorded boot time first.
+- Never signal a bare pid, and never signal a stored pgid without checking the recorded boot time
+  first. The one exception is a group this process spawned and still holds the handle for, which
+  `announce_spawn` may kill outright — it cannot have crossed a reboot.
 - Never loosen a permission ruleset in `~/.mill/settings/`, and never add `--dangerously-skip-permissions` to the argv builder. `--permission-mode acceptEdits` on the writing stages is not that flag and is required — deny rules still bind under it.
 - Never write an absolute path into a permission ruleset. Absolute deny rules are accepted silently and enforce nothing; rules are worktree-relative, and the working directory is what confines everything outside it.
 - Never remove `--tools` or `--strict-mcp-config` from the argv builder, and never move confinement into an `allow` list — an allow list does not confine.
