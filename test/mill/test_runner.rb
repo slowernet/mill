@@ -159,13 +159,14 @@ module Mill
 
 		# --- the subscription said no ---------------------------------------
 
-		# A launch the subscription refused never ran. It exits non-zero, so without
-		# being classified first it reads as a crash and takes a strike — charging a
-		# stage for a door mill could not open. Measured live 2026-08-20.
+		# A launch the subscription refused never ran, so it hands back no verdict —
+		# which is what marks it, not the exit status. Without being classified
+		# first it reads as a crash and takes a strike, charging a stage for a door
+		# mill could not open. Measured live 2026-08-20.
 		def test_a_rate_limited_launch_costs_no_strike
 			waits = []
 			runner = runner_with_pause(waits,
-				[scripted(rate_limited: true, success: false)] + clean_run)
+				[scripted(rate_limited: true, success: false, valid: false)] + clean_run)
 			runner.call
 
 			assert_equal 0, Mill::Ledger.new(db, runner.run_id).strikes('triage')
@@ -175,7 +176,7 @@ module Mill
 		def test_a_rate_limited_launch_leaves_no_attempt_behind
 			waits = []
 			runner = runner_with_pause(waits,
-				[scripted(rate_limited: true, success: false)] + clean_run)
+				[scripted(rate_limited: true, success: false, valid: false)] + clean_run)
 			runner.call
 
 			assert_equal 1, Mill::Ledger.new(db, runner.run_id).attempts('triage')
@@ -189,7 +190,7 @@ module Mill
 			waits = []
 			resets = Mill.now + 900
 			runner = runner_with_pause(waits,
-				[scripted(rate_limited: true, success: false, resets_at: resets)] + clean_run)
+				[scripted(rate_limited: true, success: false, valid: false, resets_at: resets)] + clean_run)
 			runner.call
 
 			assert_equal 1, waits.length
@@ -199,10 +200,26 @@ module Mill
 		def test_an_unknown_reset_waits_the_cap
 			waits = []
 			runner = runner_with_pause(waits,
-				[scripted(rate_limited: true, success: false)] + clean_run)
+				[scripted(rate_limited: true, success: false, valid: false)] + clean_run)
 			runner.call
 
 			assert_equal Mill::Ledger::MAX_RATE_LIMIT_PAUSE, waits.first
+		end
+
+		# The shape the ledger change introduced, exercised through the runner
+		# rather than asserted as a classification. A clean exit with nothing
+		# readable is still treated as a refusal, so it must wait rather than
+		# relaunch straight away, and must leave the ledger untouched.
+		def test_a_clean_exit_with_no_verdict_under_a_limit_waits_rather_than_striking
+			waits = []
+			runner = runner_with_pause(waits,
+				[scripted(rate_limited: true, success: true, valid: false)] + clean_run)
+			runner.call
+			ledger = Mill::Ledger.new(db, runner.run_id)
+
+			assert_equal 1, waits.length, 'a refusal must wait for the window, not relaunch at once'
+			assert_equal 0, ledger.strikes('triage')
+			assert_equal 1, ledger.attempts('triage')
 		end
 
 		def test_a_reset_already_past_still_leaves_a_minute
@@ -213,7 +230,7 @@ module Mill
 		def test_endless_rate_limiting_blocks_rather_than_waiting_forever
 			waits = []
 			refused = Array.new(Mill::Ledger::MAX_RATE_LIMIT_WAITS + 1) do
-				scripted(rate_limited: true, success: false)
+				scripted(rate_limited: true, success: false, valid: false)
 			end
 			runner = runner_with_pause(waits, refused)
 

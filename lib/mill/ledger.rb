@@ -52,10 +52,30 @@ module Mill
 		# Order matters, and the first three are all things the machine did rather
 		# than the stage.
 		#
-		# A launch the subscription refused never ran, and it exits non-zero — so
-		# without checking it first it reads as a crash and takes a strike, which
-		# charges a stage for a door mill could not open. Measured 2026-08-20: a
-		# five-hour window closed mid-run and `plan` was struck for it.
+		# A launch the subscription refused never ran, so charging it reads as a
+		# crash and takes a strike for a door mill could not open. Measured
+		# 2026-08-20: a five-hour window closed mid-run and `plan` was struck.
+		#
+		# The flag alone does not identify that launch. `rate_limited?` reports
+		# what the last rate-limit event in the stream was, and an "allowed"
+		# heartbeat clears it, so a stage throttled at minute 2 that then got its
+		# launch and finished still carries it whenever the result line lands
+		# before the next heartbeat. Reading the flag by itself threw that finished
+		# work away, and since this outcome inserts no row the relaunch reused the
+		# log filename and overwrote the log of the run that had succeeded.
+		#
+		# The verdict is what settles it, not the exit status. Nothing here has
+		# measured what a refused launch exits with, and the one refusal shape mill
+		# has measured — a session the CLI would not reopen — is reported in-band,
+		# so exit status is the wrong thing to lean on either way. A stage that
+		# handed back something mill can read did its work whatever the limit did
+		# around it.
+		#
+		# The converse is weaker and known to be: a stage that handed back nothing
+		# is treated as stopped by the limit, which is right for a refusal and
+		# wrong for a launch that worked and then died on one. Telling those apart
+		# needs the stream (a session id, a model, any turns at all), and until it
+		# does, the second case pays nothing and loses its log. See the triage note.
 		#
 		# A session the CLI would not reopen is not a crash either; the process
 		# exits cleanly having done nothing.
@@ -63,7 +83,7 @@ module Mill
 		# Then a process that died outranks whatever it managed to emit, because
 		# mill has no trustworthy account of what happened either way.
 		def self.classify(attempt)
-			return :rate_limited if attempt.rate_limited?
+			return :rate_limited if attempt.rate_limited? && !attempt.verdict.valid?
 			return :resume_failed if attempt.resume_failed?
 			return :crashed unless attempt.result.success?
 			return :no_verdict unless attempt.verdict.valid?

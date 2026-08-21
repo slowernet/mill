@@ -23,12 +23,17 @@ module Mill
 				.new(verdict, result, resume_failed, rate_limited)
 		end
 
-		# A launch the subscription refused never ran. It exits non-zero, so
-		# classified after :crashed it would take a strike for a door mill could not
-		# open — measured live 2026-08-20, when a five-hour window closed mid-run.
+		# A launch the subscription refused never ran, so classified after :crashed
+		# it would take a strike for a door mill could not open — measured live
+		# 2026-08-20, when a five-hour window closed mid-run.
+		#
+		# What marks it is the empty verdict, not the exit status: with no result
+		# line there is no payload, so Verdict.validate fails it. Nothing here has
+		# measured what such a launch exits with, which is why these fixtures no
+		# longer claim one.
 		def test_a_refused_launch_is_rate_limited_not_crashed
 			assert_equal :rate_limited,
-				Mill::Ledger.classify(attempt(success: false, rate_limited: true))
+				Mill::Ledger.classify(attempt(success: false, valid: false, rate_limited: true))
 		end
 
 		def test_a_rate_limited_launch_costs_neither_an_attempt_nor_a_strike
@@ -36,10 +41,11 @@ module Mill
 		end
 
 		# The limit outranks a session that would not reopen: mill never got far
-		# enough to try the session.
+		# enough to try the session. Neither refusal produces a verdict.
 		def test_the_limit_outranks_a_failed_resume
 			assert_equal :rate_limited,
-				Mill::Ledger.classify(attempt(success: false, rate_limited: true, resume_failed: true))
+				Mill::Ledger.classify(attempt(success: false, valid: false, rate_limited: true,
+					resume_failed: true))
 		end
 
 		# rate_limited? reports the last rate-limit event the stream saw, not the
@@ -52,6 +58,43 @@ module Mill
 		# overwrites the log of the run that succeeded.
 		def test_a_throttled_stage_that_still_finished_keeps_its_work
 			assert_equal :ok, Mill::Ledger.classify(attempt(success: true, rate_limited: true))
+		end
+
+		# PINS A KNOWN-BAD STATE. Delete this and re-price it when the row-insertion
+		# fix lands; it is here so the behaviour is visible rather than merely
+		# absent, not because it is right.
+		#
+		# A launch that ran, hit the window partway, and handed back nothing looks
+		# from here exactly like one that was refused outright, so it is priced as
+		# a refusal: no row, no attempt number, and therefore the relaunch reuses
+		# the log filename and truncates the log of the twenty minutes that did
+		# happen. The session goes with it — `reload` rebuilds `@sessions` from
+		# `stage_attempts`, and there is no row to rebuild from.
+		#
+		# Charging it a strike instead is not the answer either: nothing measures
+		# what a refusal exits with, and charging on an unproven premise is how a
+		# stage gets blocked for a door mill could not open. The fix is to tell the
+		# two apart from the stream — a session id, a model, any turns at all —
+		# and price a launch that happened as an attempt that cost no strike.
+		#
+		# Note the wait cap is no comfort here: `@rate_limit_waits` lives on the
+		# Runner instance, so a restarted or resumed run starts counting again with
+		# nothing in the database to reconstruct it from.
+		def test_a_throttled_stage_that_did_work_and_said_nothing_is_priced_as_a_refusal
+			assert_equal :rate_limited,
+				Mill::Ledger.classify(attempt(success: true, rate_limited: true, valid: false))
+		end
+
+		# The one combination this change re-priced upward, pinned so the decision
+		# is visible. A readable verdict means the stage produced something, so the
+		# limit is not what stopped it, and a non-zero exit on top of that is a
+		# crash like any other. Thin on the ground — it needs a valid result line
+		# and a bad exit and a still-rejected limit — and if it turns out to be
+		# reachable in a way that is mill's fault rather than the stage's, this is
+		# the test that should argue about it.
+		def test_a_readable_verdict_with_a_bad_exit_is_a_crash_even_under_a_limit
+			assert_equal :crashed,
+				Mill::Ledger.classify(attempt(success: false, valid: true, rate_limited: true))
 		end
 
 		# --- classification -------------------------------------------------

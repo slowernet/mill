@@ -798,7 +798,22 @@ is exactly the truth.
 | `--resume` failed, so mill started fresh with the context appended | +1 | none |
 | mill restarted and interrupted it | +1 | none |
 | A stale git lock was cleared before it ran | n/a | none |
-| It is waiting behind a rate limit | no launch | none |
+| It is waiting behind a rate limit, and handed back no verdict | no launch | none |
+| It was throttled but handed back a verdict anyway | +1 | priced on the verdict |
+
+**The verdict decides whether a limit refused the launch, not the exit status.** The rate-limit
+flag says only what the last such event in the stream was, and an "allowed" heartbeat clears it —
+so a stage throttled early that then gets its launch and finishes still carries the flag. Reading
+the flag alone discarded that finished work, and because the free outcome inserts no row the
+relaunch reused the log filename and destroyed the successful run's log. Exit status cannot stand
+in for the verdict either: nothing has yet measured what a refused launch exits with, and the one
+refusal mill has measured — a session the CLI would not reopen — is reported in-band.
+
+This leaves one case knowingly mispriced. A launch that ran, hit the window partway and handed
+back nothing is indistinguishable here from one refused outright, so it is priced as "no launch":
+it loses its log to the relaunch, and its session with it. Separating the two needs the stream
+rather than the ledger — a session id, a model, any turns at all — and pricing a launch that did
+happen as an attempt that cost no strike.
 
 The rule behind the table: **a strike means the work was wrong. Everything the machine did to a
 stage is free.** A laptop that slept, a socket that died, a lock file left by a SIGKILL, and mill

@@ -26,19 +26,24 @@ findings — see "What this says about the process" at the end.
 
 ## Where things stand
 
-PR #1 is open and `MERGEABLE`. Its CI check is red and will stay red until the four deliberately-red
-tests below have their bugs fixed.
+PR #1 is open and `MERGEABLE`. Its CI check is red and will stay red until the three remaining
+deliberately-red tests below have their bugs fixed.
 
-Landed on the branch on 2026-08-20:
+Committed on the branch, 2026-08-20:
 
 - The four honest tests, in `test_spawn.rb`, `test_supervisor.rb`, `test_poller.rb` and
-  `test_ledger.rb`. All four are red on purpose.
+  `test_ledger.rb`. Three are still red on purpose; the ledger one now passes.
 - `CLAUDE.md` — the signalling invariant scoped to *stored* pgids, with `announce_spawn` named as
   the one exception. This was needed before anyone could act on the spawn test.
 - `test_repo.rb` — blocker zero, below.
 
-Nothing under `lib/` has been changed yet: every bug in this queue is still present. Suite: 485 runs,
-4 failures, 0 errors, on the laptop and on the runner alike.
+**Check `git status` before starting: work may be sitting uncommitted.** As of 2026-08-21 the
+rate-limit fix (`ledger.rb` and its two test files) and two documentation changes were finished and
+verified but not committed. The design doc and this note each carry two unrelated topics in that
+state, so splitting them means staging by hunk rather than by file.
+
+Suite: 488 runs, 3 failures, 0 errors, on the laptop and on the runner alike. `ledger.rb` is the only
+file under `lib/` that has been touched; every other bug in this queue is still present.
 
 ## Blocker zero: CI has never been green — FIXED 2026-08-20
 
@@ -62,9 +67,9 @@ that `Mill::Repo.prepare` produced. The fix gives the identity to the tests that
 git's identity invention so the laptop reproduces the runner instead of hiding it.
 
 **This does not turn the CI check green**, and the earlier wording here was too loose. `rake test`
-still exits non-zero on the four deliberately-red tests below, so the badge stays red until those
-bugs are fixed. What it restores is *signal*: the failure list is now four known bugs and nothing
-else, where before it was four bugs plus six errors that said nothing about the code.
+still exits non-zero on the deliberately-red tests below, so the badge stays red until those bugs
+are fixed. What it restores is *signal*: the failure list is now known bugs and nothing else, where
+before it was those bugs plus six errors that said nothing about the code.
 
 ### Still open: mill gives its own clones no identity either
 
@@ -123,11 +128,19 @@ green: restore-on-raise inside `Supervisor#start`, or restore in the poller's re
 fix-location-agnostic — the first draft of this test pinned the repair to the poller and would have
 stayed red under the more natural supervisor-side fix.
 
-**`test_a_throttled_stage_that_still_finished_keeps_its_work`** — `ledger.rb:66`. `classify` reads
-the rate-limit flag before `result.success?`. Every existing rate-limit test paired
-`rate_limited: true` with `success: false`, so none of them could see it.
-Fix: `return :rate_limited if attempt.rate_limited? && !attempt.result.success?`. It must stay ahead
-of `resume_failed?` or `test_the_limit_outranks_a_failed_resume` breaks.
+**`test_a_throttled_stage_that_still_finished_keeps_its_work`** — `ledger.rb:66`. FIXED 2026-08-21,
+see item 2 in the session order. `classify` read the rate-limit flag before anything else. Every
+existing rate-limit test paired `rate_limited: true` with `success: false`, so none could see it.
+The fix is `return :rate_limited if attempt.rate_limited? && !attempt.verdict.valid?` — the verdict
+decides, not the exit status. It must stay ahead of `resume_failed?` or
+`test_the_limit_outranks_a_failed_resume` breaks.
+
+Two wrong turns on the way, recorded so nobody takes them again. Gating on `!attempt.result.success?`
+looks equivalent and is not: nothing in mill has measured what a refused launch exits with, the
+file's own cited incident is a window closing *mid-run* (so a non-zero exit from a launch that did
+run), and gating that way drops the rate-limit wait for any refusal that exits cleanly — turning a
+free outcome into a strike plus an immediate relaunch into a closed window. Then, charging the
+adjacent case a strike is tempting and also wrong; see the open questions below.
 
 Note the review described `Stream#rate_limited?` as a sticky stamp. It is not: `on_rate_limit`
 clears it on an `allowed` heartbeat (`stream.rb:141`). The bug is real anyway — the reachable case
@@ -139,11 +152,13 @@ between to clear it.
 Three reviewers independently reported the two-walker race and two reported the rate-limit
 misclassification, which is the strongest signal in the set.
 
-1. **`classify` reads the rate-limit flag before `result.success?`** — `ledger.rb:66`,
-   `runner.rb:139`, `stream.rb:75`. A stage that was throttled, recovered and finished has its
-   verdict discarded. `COST[:rate_limited]` inserts no row, so `next_attempt` does not advance and
-   the relaunch reuses the log filename, destroying the successful run's log.
-   *Test already written and red.*
+1. **`classify` read the rate-limit flag before anything else** — `ledger.rb:66`, `runner.rb:139`,
+   `stream.rb:75`. A stage that was throttled, recovered and finished had its verdict discarded.
+   `COST[:rate_limited]` inserts no row, so `next_attempt` does not advance and the relaunch reuses
+   the log filename, destroying the successful run's log.
+   **HALF FIXED 2026-08-21.** A throttled stage that finished now keeps its work. A launch that ran,
+   hit the window partway and handed back nothing is still priced as though it never launched, and
+   still loses its log and its session — that half is item 2b in the session order.
 
 2. **`reap` discards what `Spawn.reap` returned** — `supervisor.rb:135`. `Supervisor#identify`
    accepts ±2s of clock drift; `Spawn.identify` requires exact equality. One second of disagreement
@@ -156,6 +171,17 @@ misclassification, which is the strongest signal in the set.
    escapes `filter_map` and aborts the whole sweep, the row is never repaired, and it raises again
    every tick forever — for every run, not just that one. A run claimed but not yet started is
    exactly that state. So is a run left `running` by the failed-start bug above.
+
+   Before writing the fix, decide what a `running` row with no `current_stage` *means*, because the
+   three plausible fixes disagree about it. Charging nothing and moving on keeps the sweep alive but
+   silently tolerates a bookkeeping failure, and the existing test
+   `test_a_running_run_with_no_stage_is_an_error_rather_than_a_no_op` says that is deliberately not
+   wanted. Repairing the row — setting the stage to the route's first — invents a fact mill does not
+   know. Keeping the raise but containing it, so one bad row is skipped and reported while the sweep
+   finishes, preserves both the loud failure and the other runs. The third looks right, but note it
+   changes what `reap` returns and the existing test asserts the raise reaches the caller. Whichever
+   way, the fix must not swallow the condition: a claimed run that never started is a real fault and
+   the point is that it stops being a *fatal* one.
 
 4. **`start` flips the row to `running` before registering its thread** — `supervisor.rb:76`,
    `workers.rb:56`. The window spans a GraphQL mutation. Inside it `identify` returns `:gone`, so
@@ -265,13 +291,15 @@ misclassification, which is the strongest signal in the set.
 
 ## Open design questions
 
-Two cases where the obvious fix quietly decides something nobody has decided. Both should be settled
-deliberately and pinned with a test, whichever way they go.
+Cases where the obvious fix quietly decides something nobody has decided. Each should be settled
+deliberately and pinned with a test, whichever way it goes.
 
-- An attempt with `success: true`, `rate_limited: true` and an **invalid** verdict currently costs
-  nothing. The minimal `classify` fix silently reclassifies it as `:no_verdict` — attempt +1 and a
-  strike +1. A stage that exited 0 behind a live rate limit and emitted nothing would start paying
-  for it, which sits awkwardly against "everything the machine did to a stage is free".
+- ~~An attempt with `success: true`, `rate_limited: true` and an **invalid** verdict.~~ **Settled
+  2026-08-21: it stays free.** Charging it a strike needs a premise nothing has measured — that a
+  refusal exits non-zero — and charging on an unproven premise is exactly how a stage gets blocked
+  for a door mill could not open, which is the bug item 2 fixed. Revisit only with a recorded
+  refusal transcript. Note this is the same state as item 2b, so pricing it correctly and fixing 2b
+  are one job, not two.
 - Lowering `MILL_CONCURRENCY` from 2 to 1 while two runs are live leaves both rows `running` at cap
   1. Today neither restarts. Removing the `at_cap?` guard restarts both, giving two walkers at cap
   1. Counting everyone-but-me deadlocks again. There is no obviously right answer.
@@ -283,7 +311,15 @@ the next easier to see.
 
 1. ~~CI git identity~~ — done 2026-08-20. Restores signal, not a green check; the badge
    stays red until 2–10 land. Left behind: mill's own clones still carry no identity.
-2. Rate-limit misclassification (critical 1) — test is already written and red.
+2. ~~Rate-limit misclassification (critical 1)~~ — done 2026-08-21. `classify` now asks the verdict
+   rather than the flag, so a throttled stage that finished keeps its work. **Half of critical 1
+   remains and is now item 2b.**
+2b. A launch that ran, hit the window partway and handed back nothing is still priced as "no
+   launch": no row, so the relaunch truncates its log and `reload` cannot recover its session.
+   Telling a refusal from a cut-off launch needs the stream — a session id, a model, any turns —
+   and pricing a launch that happened as an attempt costing no strike.
+   `test_a_throttled_stage_that_did_work_and_said_nothing_is_priced_as_a_refusal` pins the bad
+   behaviour on purpose and should be deleted by whoever fixes this.
 3. `interrupt` raising on a NULL `current_stage` (critical 3) — a dead reaper hides everything else,
    and it is the failure mode that the `claim` orphan and the failed-start bug both feed.
 4. `start`/`reap` race (critical 4) — check whether it also frees `restore` and the strike reset.
