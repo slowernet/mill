@@ -76,10 +76,21 @@ the deployment target the design doc describes — that first commit fails, the 
 strike, and the run burns its attempts on something the machine did to it. Nothing tests this and
 `Mill::Doctor` does not check it.
 
-Fixing it means deciding what name mill's commits carry in real repositories: the operator's own
-identity, a dedicated mill identity, or the GitHub App identity the design doc lists as future work
-(line 1905). That is a design decision, which is why it was not settled while fixing the tests. The
-hook is one line next to `repo.rb:72` once the question is answered.
+**Decided 2026-08-20, written up in the design doc under "Setting up, and preparing a repo".** The
+identity is mill's own setting, not a `.mill.yml` key, because that file lives in the repo being
+worked on and its base branch decides what name your credentials would push under. You are the
+author and mill is the committer, named `mill` at the author's address, set through
+`GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` in `Mill::Rules.env_for` (`rules.rb:89`). Unset, the
+author falls back to the machine's git config, so a laptop needs nothing — and `rake mill:doctor`
+fails when nothing resolves, so a bare server is caught at setup rather than mid-run.
+
+Not implemented. It needs `Repo.prepare` to write the identity beside `gc.auto` (`repo.rb:72`), the
+two committer variables in `env_for`, a doctor check, and a test that a prepared clone commits with
+the right author and committer. It sits below the critical bugs in the queue: mill works on a laptop
+today, and the criticals do not.
+
+Note this leaves every commit mill has made so far authored as the operator, indistinguishable in
+`git log` and `git blame` from work typed by hand.
 
 ## Done: the four tests that passed for the wrong reason
 
@@ -284,6 +295,8 @@ the next easier to see.
 10. Failed start losing the answer — test already written and red, both fixes verified.
 11–14. The remaining blocking HIGHs: the two `workers.rb` lifecycle bugs, `redrive` killing the
     tick, doctor's public-bind check, `claim`'s orphaned row, `finish` raising, `Repo.slug`.
+15. mill's commit identity — decided but not built; see blocker zero above. Last because it is the
+    only item here that is not a bug in shipped behaviour, and mill works on a laptop without it.
 
 Merging before at least 1–10 means merging something that is not safe to run unattended:
 `Workers.enabled?` defaults to on, so a stray `Ready` on the board reaches every critical path

@@ -1184,9 +1184,10 @@ supervisor prepares it on first touch:
    of yours is never touched beyond local git config.
 2. **Set `gc.auto=0` and `maintenance.auto=0`** so a stage's commit cannot trigger a gc that
    rewrites shared refs while other runs hold them.
-3. **Read `.mill.yml`** from the base branch into `repos.config_json`: base branch, test
+3. **Set the commit identity**, without which a stage cannot commit at all. See below.
+4. **Read `.mill.yml`** from the base branch into `repos.config_json`: base branch, test
    command, gating CI workflow, trusted PR authors, `evidence_public`, secret variable names.
-4. **Verify** the token covers the repo and `~/.mill/secrets/<owner>-<repo>.env` exists.
+5. **Verify** the token covers the repo and `~/.mill/secrets/<owner>-<repo>.env` exists.
 
 If anything is missing, mill blocks **that item** and comments naming exactly what. mill writes
 nothing to the repo — it uses no labels — so it only reads, apart from setting local git
@@ -1195,6 +1196,23 @@ config.
 mill reads `.mill.yml` only from the base branch, never from the worktree HEAD, and pins the
 resolved config onto the run. An agent can edit `.mill.yml` in its worktree; that edit must not
 weaken the next run.
+
+**mill's commits say a machine wrote them.** A stage runs `git commit` inside a worktree of
+mill's clone, and `git clone` copies no config, so a clone starts with no identity of its own.
+The identity is mill's own setting rather than a `.mill.yml` key: that file lives in the repo
+being worked on, and whoever can commit to its base branch would otherwise choose the name your
+credentials push under.
+
+You are the **author** and mill is the **committer**. `git blame` keeps pointing at the person
+who wanted the change, while `git log` and GitHub both show that a machine made the commit. The
+committer is named `mill` and uses the author's address, so the commit still links to the
+account answerable for it instead of showing as an unrecognised stranger. mill sets this through
+`GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` in the stage environment, beside the secrets.
+
+With no identity configured the author falls back to the machine's own git config, which is why
+a laptop needs nothing set. A server with no `~/.gitconfig` has nothing to fall back to, so
+`rake mill:doctor` fails when no identity resolves — otherwise the first run dies part-way
+through `implement` and the stage is charged a strike for something the machine did to it.
 
 **mill injects secrets.** A fresh worktree holds tracked files only, so `.env` and
 `config/master.key` are missing, and a suite that needs them would fail identically on both
@@ -1206,8 +1224,8 @@ into the worktree, and keeps those values out of the tee'd log.
 `project` scope; the board's three fields and their options; that you disabled the built-in
 workflows; the stage token's permissions, expiry, and file mode; `~/.mill` modes; the permission
 rulesets' deny rules; and, for every repo the board currently references, that it can resolve
-the clone, that `gc.auto` is set, that `.mill.yml` parses, that branch protection requires
-checks, and that the named secret variables exist. Most of what it checks is critical to
+the clone, that `gc.auto` is set, that a commit identity resolves, that `.mill.yml` parses, that
+branch protection requires checks, and that the named secret variables exist. Most of what it checks is critical to
 containment, so a red doctor blocks everything.
 
 **Off switch:** remove items from the board, or drop the repo from the token's repository list.
