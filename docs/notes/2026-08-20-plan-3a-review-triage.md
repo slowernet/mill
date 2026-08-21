@@ -12,7 +12,8 @@ findings — see "What this says about the process" at the end.
 ## Contents
 
 - [Where things stand](#where-things-stand)
-- [Blocker zero: CI has never been green](#blocker-zero-ci-has-never-been-green)
+- [Blocker zero: CI has never been green](#blocker-zero-ci-has-never-been-green--fixed-2026-08-20)
+  - [Still open: mill gives its own clones no identity either](#still-open-mill-gives-its-own-clones-no-identity-either)
 - [Done: the four tests that passed for the wrong reason](#done-the-four-tests-that-passed-for-the-wrong-reason)
 - [The eight CRITICAL findings are six root causes](#the-eight-critical-findings-are-six-root-causes)
 - [HIGH findings that block a merge](#high-findings-that-block-a-merge)
@@ -25,27 +26,28 @@ findings — see "What this says about the process" at the end.
 
 ## Where things stand
 
-PR #1 is open, `MERGEABLE`, 3,996 additions across 47 files, and its last CI run failed.
+PR #1 is open and `MERGEABLE`. Its CI check is red and will stay red until the four deliberately-red
+tests below have their bugs fixed.
 
-Uncommitted in the working tree as of the end of the 2026-08-20 session:
+Landed on the branch on 2026-08-20:
 
-- `test/mill/test_spawn.rb`, `test/mill/test_supervisor.rb`, `test/mill/test_poller.rb`,
-  `test/mill/test_ledger.rb` — the four honest tests below. All four are red on purpose.
-- `CLAUDE.md` — the signalling invariant is now scoped to *stored* pgids, with `announce_spawn`
-  named as the one exception. This was needed before anyone could act on the spawn test.
+- The four honest tests, in `test_spawn.rb`, `test_supervisor.rb`, `test_poller.rb` and
+  `test_ledger.rb`. All four are red on purpose.
+- `CLAUDE.md` — the signalling invariant scoped to *stored* pgids, with `announce_spawn` named as
+  the one exception. This was needed before anyone could act on the spawn test.
+- `test_repo.rb` — blocker zero, below.
 
-Nothing under `lib/` is modified. Local suite: 485 runs, 4 failures, 0 errors — the four deliberate
-ones and nothing else.
+Nothing under `lib/` has been changed yet: every bug in this queue is still present. Suite: 485 runs,
+4 failures, 0 errors, on the laptop and on the runner alike.
 
-## Blocker zero: CI has never been green
+## Blocker zero: CI has never been green — FIXED 2026-08-20
 
 Not in the review. All four reviewers ran on the author's laptop, so none of them could see it.
 
-Six `TestRepo` tests error on a clean runner with `fatal: empty ident name`. `Mill::Git.clone_init`
-sets `user.email` and `user.name` on repos the tests build, but `commit_to_base`
-(`test/mill/test_repo.rb:173`) commits inside a clone that `Mill::Repo.prepare` made with a real
-`git clone`, and nothing sets an identity there. It passes locally only because the author's global
-`~/.gitconfig` supplies one.
+Six `TestRepo` tests errored on a clean runner with `fatal: empty ident name`. `git clone` copies no
+config, so a clone has no identity of its own, and `commit_to_base` committed into one. It passed
+locally only because git invents an identity from the macOS account record; the CI `runner` account
+has an empty GECOS field, so git had nothing to invent from.
 
 Affected: `test_a_config_file_that_does_not_parse_blocks_the_item`,
 `test_a_config_file_that_is_not_a_mapping_is_ignored`,
@@ -54,9 +56,30 @@ Affected: `test_a_config_file_that_does_not_parse_blocks_the_item`,
 `test_a_named_secret_that_is_present_does_not_block`,
 `test_reads_the_config_from_the_base_branch_only`.
 
-Fix this first. It is one line, and until it is done there is no real CI signal on anything else.
-Set the identity on the prepared clone rather than in the workflow — a test that needs the ambient
-environment to be configured is the same class of problem as the four below.
+All six commit into a clone the test's own `place_clone` made — not, as first written here, one
+that `Mill::Repo.prepare` produced. The fix gives the identity to the tests that commit, via an
+`identify` helper called from `place_clone` and `commit_to_base`, and `TestRepo#setup` now disables
+git's identity invention so the laptop reproduces the runner instead of hiding it.
+
+**This does not turn the CI check green**, and the earlier wording here was too loose. `rake test`
+still exits non-zero on the four deliberately-red tests below, so the badge stays red until those
+bugs are fixed. What it restores is *signal*: the failure list is now four known bugs and nothing
+else, where before it was four bugs plus six errors that said nothing about the code.
+
+### Still open: mill gives its own clones no identity either
+
+Same cause, different scope, and not fixed. `Mill::Repo.prepare` writes `gc.auto` and
+`maintenance.auto` to the clone (`repo.rb:71`) and no identity. Stages commit inside worktrees of
+that clone, and `prompts/implement.md` tells the implement stage to make a commit per task. On a
+server whose account has no `~/.gitconfig` — the `ubuntu-latest` shape mill's own CI runs on, and
+the deployment target the design doc describes — that first commit fails, the stage is charged a
+strike, and the run burns its attempts on something the machine did to it. Nothing tests this and
+`Mill::Doctor` does not check it.
+
+Fixing it means deciding what name mill's commits carry in real repositories: the operator's own
+identity, a dedicated mill identity, or the GitHub App identity the design doc lists as future work
+(line 1905). That is a design decision, which is why it was not settled while fixing the tests. The
+hook is one line next to `repo.rb:72` once the question is answered.
 
 ## Done: the four tests that passed for the wrong reason
 
@@ -247,7 +270,8 @@ deliberately and pinned with a test, whichever way they go.
 Roughly fourteen sessions at one root cause each. The first four are ordered so that each one makes
 the next easier to see.
 
-1. CI git identity — restores real CI signal.
+1. ~~CI git identity~~ — done 2026-08-20. Restores signal, not a green check; the badge
+   stays red until 2–10 land. Left behind: mill's own clones still carry no identity.
 2. Rate-limit misclassification (critical 1) — test is already written and red.
 3. `interrupt` raising on a NULL `current_stage` (critical 3) — a dead reaper hides everything else,
    and it is the failure mode that the `claim` orphan and the failed-start bug both feed.

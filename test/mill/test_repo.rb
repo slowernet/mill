@@ -13,14 +13,49 @@ module Mill
 			FileUtils.mkdir_p([@home, @clones])
 			Mill.instance_variable_set(:@home, @home)
 			ENV['MILL_CLONES'] = @clones
+			disable_invented_identity
 			@origin = build_origin
 		end
 
 		def teardown
+			restore_invented_identity
 			FileUtils.remove_entry(@root, true)
 			Mill.instance_variable_set(:@home, nil)
 			ENV.delete('MILL_CLONES')
 			super
+		end
+
+		# A clone does not inherit an identity from the repository it came from, and
+		# CI runs as an account that has none to fall back on. On a developer's
+		# machine git invents one from the account name, so a clone that cannot
+		# commit still looks healthy here and dies on the runner. useConfigOnly turns
+		# the invention off, which is what the runner effectively has — these tests
+		# now see what CI sees.
+		# Config is only half of it: GIT_AUTHOR_NAME and its three companions sit
+		# above config and useConfigOnly does not touch them, so a machine exporting
+		# them would satisfy every commit here and still ship a clone the runner
+		# cannot commit in. They are cleared with it.
+		GIT_IDENTITY_ENV = %w[GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_AUTHOR_NAME
+			GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL EMAIL].freeze
+
+		def disable_invented_identity
+			@ambient_git = ENV.values_at(*GIT_IDENTITY_ENV)
+			path = File.join(@root, 'gitconfig')
+			File.write(path, "[user]\n\tuseConfigOnly = true\n")
+			GIT_IDENTITY_ENV.each { |key| ENV[key] = nil }
+			ENV['GIT_CONFIG_GLOBAL'] = path
+			ENV['GIT_CONFIG_NOSYSTEM'] = '1'
+		end
+
+		# teardown runs even when setup raised, and clearing what was never captured
+		# would take a developer's real GIT_CONFIG_GLOBAL with it for the rest of the
+		# process.
+		def restore_invented_identity
+			ENV.delete('GIT_CONFIG_NOSYSTEM')
+			return unless @ambient_git
+
+			GIT_IDENTITY_ENV.each_with_index { |key, i| ENV[key] = @ambient_git[i] }
+			@ambient_git = nil
 		end
 
 		# A bare repo standing in for github.com/slowernet/rep. The path has to end
@@ -45,8 +80,22 @@ module Mill
 			end
 		end
 
+		# git clone copies no config, so a clone has no identity of its own and mill
+		# gives it none — what name mill's own commits should carry is a separate
+		# open question. A test that commits into a clone supplies one itself, the
+		# same way clone_init does for the repositories the tests build.
+		#
+		# Called from both here and commit_to_base: Repo.resolve makes clones too,
+		# and the first test that commits into one of those would otherwise be green
+		# here and red on the runner all over again. Re-running git config is free.
+		def identify(path)
+			Mill::Git.run!(path, 'config', 'user.email', 'test@example.com')
+			Mill::Git.run!(path, 'config', 'user.name', 'Test')
+			path
+		end
+
 		def place_clone(dir_name, origin_url = @origin)
-			Mill::Git.clone(origin_url, File.join(@clones, dir_name))
+			identify(Mill::Git.clone(origin_url, File.join(@clones, dir_name)))
 		end
 
 		def test_one_matching_clone_is_used_as_it_stands
@@ -171,6 +220,7 @@ module Mill
 		def repo_id = db[:repos].where(owner: 'slowernet', name: 'rep').get(:id)
 
 		def commit_to_base(clone, path, body)
+			identify(clone)
 			File.write(File.join(clone, path), body)
 			Mill::Git.run!(clone, 'add', '-A')
 			Mill::Git.run!(clone, 'commit', '-m', "add #{path}")
