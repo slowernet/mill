@@ -23,6 +23,8 @@ module Mill
 			def rejects? = verdict.valid? && verdict.rejects?
 			def session_id = result.stream.session_id
 			def resume_failed? = result.stream.resume_failed?
+			def rate_limited? = result.stream.rate_limited?
+			def rate_limit_resets_at = result.stream.rate_limit_resets_at
 			def tokens = result.stream.tokens
 			def model = result.stream.model
 			def log_path = result.log_path
@@ -82,9 +84,11 @@ module Mill
 		#
 		# `worktree` is both the stage's working directory (layer 1's real
 		# filesystem boundary) and the root the artifact must resolve inside.
-		def run(prompt, number:, worktree:, log_path:, session_id: nil, env: {}, secrets: [])
+		def run(prompt, number:, worktree:, log_path:, session_id: nil, env: {}, secrets: [],
+			on_spawn: nil)
 			nonce = self.class.nonce
-			spawn = Mill::Spawn.new(log_path: log_path, chdir: worktree, secrets: secrets)
+			spawn = Mill::Spawn.new(log_path: log_path, chdir: worktree, secrets: secrets,
+				on_spawn: on_spawn)
 			result = spawn.run(argv(envelope(prompt, number, nonce), session_id: session_id), env: env)
 
 			Attempt.new(stage: stage, number: number, nonce: nonce, result: result,

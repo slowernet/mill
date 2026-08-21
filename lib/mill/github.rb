@@ -38,6 +38,28 @@ module Mill
 				'number,title,body,state,author,comments,url')
 		end
 
+		# When the window reopens, as a UTC epoch second. The rate_limit endpoint is
+		# itself exempt, so asking costs nothing — which is what makes waiting for
+		# the reset a better answer than backing off blindly into a closed window.
+		# nil means mill could not find out, and the caller must fall back rather
+		# than treat it as "reopens now".
+		def rate_limit_reset(resource = :graphql)
+			json('api', 'rate_limit')&.dig(:resources, resource.to_sym, :reset)
+		rescue Error
+			nil
+		end
+
+		def project_id(project, owner:)
+			json('project', 'view', project.to_s, '--owner', owner, '--format', 'json')[:id]
+		end
+
+		# Field and option ids are opaque and belong to the project, so mill has to
+		# resolve them rather than guess at them from the names it knows.
+		def project_fields(project, owner:)
+			json('project', 'field-list', project.to_s, '--owner', owner, '--format', 'json')
+				.fetch(:fields, [])
+		end
+
 		# Projects v2 is GraphQL-only, so the board is never read with `gh issue list`.
 		def board_items(project, owner:)
 			json('project', 'item-list', project.to_s, '--owner', owner, '--format', 'json')
@@ -84,9 +106,16 @@ module Mill
 			data.dig(:data, :user, :projectV2, :workflows, :nodes) || []
 		end
 
-		def comments(repo, number)
-			pages = json('api', "repos/#{repo}/issues/#{number}/comments?per_page=100",
-				'--paginate', '--slurp')
+		# `since` is why the cursor exists. Without it every sweep re-fetches every
+		# comment on every live subject: a run blocked for a week on a 300-comment
+		# issue is ten paginated pages every tick, which ends in a secondary rate
+		# limit that wedges the poller. It is inclusive of the boundary second, so
+		# a comment created in the same second comes back again — which is what the
+		# caller's own filter and the unique index on gh_node_id are for.
+		def comments(repo, number, since: nil)
+			path = "repos/#{repo}/issues/#{number}/comments?per_page=100"
+			path += "&since=#{since}" if since
+			pages = json('api', path, '--paginate', '--slurp')
 			Array(pages).flatten(1)
 		end
 
@@ -122,6 +151,13 @@ module Mill
 		end
 
 		def stamp(body) = "#{MARKER}\n#{body}"
+
+		# mill is the sole writer of Status. This is the only method that writes
+		# one, which is what makes that rule enforceable rather than aspirational.
+		def set_status(project_id:, item_id:, field_id:, option_id:)
+			run('project', 'item-edit', '--id', item_id, '--project-id', project_id,
+				'--field-id', field_id, '--single-select-option-id', option_id)
+		end
 
 		# mill opens the pull request, not the stage. The stage composes the body and
 		# pushes the branch — both of which work inside the sandbox — and mill makes

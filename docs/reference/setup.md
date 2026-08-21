@@ -69,16 +69,37 @@ default `Status` field whose options are `Todo` / `In Progress` / `Done`, which 
 gh project field-list <number> --owner @me --format json
 ```
 
-If a `Status` field exists with the wrong options, delete and recreate it — there is no command
-to edit an existing single-select's options:
+A new project arrives with a built-in `Status` whose options are `Todo` / `In Progress` / `Done`.
+**You cannot delete it and you cannot recreate it** — measured 2026-08-19, GitHub answers
+`Only custom fields can be deleted` to the first and `Name cannot have a reserved value` to the
+second. `gh project` has no command to edit a single-select's options either.
+
+Replace them in place with `updateProjectV2Field`, which takes the whole option list and swaps it.
+Take the field id from the `field-list` output above:
 
 ```
-gh project field-delete --id <field-id>
+cat > /tmp/status.json <<'JSON'
+{
+  "query": "mutation($fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]) { updateProjectV2Field(input: {fieldId: $fieldId, singleSelectOptions: $options}) { projectV2Field { ... on ProjectV2SingleSelectField { options { name } } } } }",
+  "variables": {
+    "fieldId": "<the Status field id>",
+    "options": [
+      {"name": "Ready",   "color": "BLUE",   "description": "Released to the factory"},
+      {"name": "Running", "color": "YELLOW", "description": "A run has claimed it"},
+      {"name": "Blocked", "color": "ORANGE", "description": "Stopped for input; reply in a comment"},
+      {"name": "Done",    "color": "GREEN",  "description": "PR opened"},
+      {"name": "Failed",  "color": "RED",    "description": "Terminal without a PR"}
+    ]
+  }
+}
+JSON
 
-gh project field-create <number> --owner @me --name Status \
-  --data-type SINGLE_SELECT \
-  --single-select-options "Ready,Running,Blocked,Done,Failed"
+gh api graphql --input /tmp/status.json
 ```
+
+`name`, `color` and `description` are all required. Any option you leave out of that list is
+removed from the field, along with its value on every item — do this before the board has items,
+or list the options you are keeping alongside the new ones.
 
 Then the two directive fields. Projects v2 has no boolean field type, so each is a single-select
 with one option — set or unset:
@@ -115,9 +136,14 @@ mill uses no labels, so there is nothing to create in any repository.
 **mill is the sole writer of the Status field.** Projects v2 ships automation that also writes
 it, and a new project may arrive with some of it enabled.
 
-In the project's **Workflows** settings, turn off every built-in workflow — including "Item
-closed", "Item reopened", "Pull request merged", "Code review approved", "Auto-add to project",
-and "Auto-archive items".
+In the project's **Workflows** settings at
+`https://github.com/users/<you>/projects/<number>/workflows`, turn off every built-in workflow.
+A default project ships six enabled: "Item closed", "Pull request merged", "Auto-close issue",
+"Auto-add sub-issues to project", "Pull request linked to issue", and "Item added to project".
+
+**This is a browser step and cannot be scripted.** The API exposes `enabled` for reading — which
+is how doctor checks it — but there is no mutation to turn one off. `deleteProjectV2Workflow`
+exists and is not the same thing; do not reach for it on a built-in.
 
 Two are actively harmful rather than merely redundant:
 
@@ -331,7 +357,15 @@ It checks, and names anything missing:
   catches a workflow re-enabled later
 - the stage token exists, is readable only by you, is unexpired, and has exactly the two expected
   permissions
-- `~/.mill` and `~/.mill/secrets` are `0700`
+- `~/.mill` and `~/.mill/secrets` are `0700`, and every file inside `secrets/` is `0600` — these
+  values reach a subprocess environment, and a mode that has drifted is otherwise silent
+- every directory named in `MILL_CLONES` exists. A root that does not silently becomes "clone it
+  myself" for every repo, and mill then works in a checkout you are not looking at
+- `MILL_ADMIN_EMAILS` is non-empty whenever `MILL_BIND` is anything but loopback. The write paths
+  are a kill switch and a worktree deleter, and the log endpoint streams repo contents
+- the board's `Status` field carries every option mill writes — `Running`, `Blocked`, `Done` and
+  `Failed`. A missing one fails at the moment it matters, when a run blocks or finishes, rather
+  than at setup
 - the permission ruleset files in `~/.mill/settings/` exist and carry every deny rule the design
   doc requires, **with no absolute paths and no `Write(...)` rules**, and put no confinement in
   an `allow` list — each of those three is accepted silently and enforces nothing

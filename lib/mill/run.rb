@@ -9,6 +9,11 @@ module Mill
 	class Run
 		attr_reader :run_id, :worktree, :branch, :spec_path, :problem, :questions
 
+		# The supervisor sets this to learn which process groups are its own. Set
+		# per Run rather than globally: a second supervisor believing no group is
+		# mill's would classify every healthy stage as foreign and kill it.
+		attr_accessor :on_identity
+
 		def initialize(repo:, number:, clone:, db: Mill.db, github: nil, git: Mill::Git,
 			claude: Mill::Claude)
 			@owner, @name = repo.split('/', 2)
@@ -55,13 +60,20 @@ module Mill
 		# Answering a blocked run. Nothing restarts: the blocked stage resumes its
 		# own session with the answers injected, and the route carries on from
 		# there. Plan 3 triggers this from a comment; by hand it is rake mill:answer.
-		def self.resume(run_id, answers, db: Mill.db, claude: Mill::Claude, &announce)
+		# Builds a Run from a row that already exists. Nothing is re-resolved, so
+		# adopting a run cannot pick a different branch than the one it has been
+		# working on.
+		def self.adopt(run_id, answers: [], db: Mill.db, claude: Mill::Claude)
 			row = db[:runs].where(id: run_id).first or raise Mill::Error, "no run #{run_id}"
 			repo = db[:repos].where(id: row[:repo_id]).first
 
 			run = allocate
 			run.send(:initialize_resumed, row, repo, db, claude, Array(answers))
-			run.call(&announce)
+			run
+		end
+
+		def self.resume(run_id, answers, db: Mill.db, claude: Mill::Claude, &announce)
+			adopt(run_id, answers: answers, db: db, claude: claude).call(&announce)
 		end
 
 		def call(launcher: nil, &announce)
@@ -76,7 +88,18 @@ module Mill
 					launcher: launcher || default_launcher(&announce),
 					context: { issue: issue_body, spec_path: @spec_path, branch: @branch, base: base,
 						answers: @answers })
-				@resumed ? r.restore : r
+				# A blocked run being answered restores, which may spend its sanctioned
+				# strike reset. A run that already has attempts behind it — one the
+				# supervisor interrupted and restarted — only reloads: it picks up at
+				# the stage it was in, with nothing forgiven, because nobody answered
+				# anything. A run with no attempts starts at the top of its route.
+				if @resumed
+					r.restore
+				elsif @ledger_has_attempts
+					r.reload
+				else
+					r
+				end
 			end
 		end
 
@@ -109,7 +132,12 @@ module Mill
 			@repo = "#{repo[:owner]}/#{repo[:name]}"
 			@answers = answers
 			@questions = []
-			@resumed = true
+			# A fresh run has nothing to restore; a blocked one has verdicts the
+			# resumed stage needs handed back to it.
+			@resumed = row[:status] == 'blocked'
+			# Anything already attempted means this run is being picked up rather
+			# than started, whatever its status says.
+			@ledger_has_attempts = db[:stage_attempts].where(run_id: row[:id]).any?
 		end
 
 		def fail_with(problem, questions)
@@ -146,9 +174,28 @@ module Mill
 				announce&.call(stage, number, !session_id.nil?)
 				log = File.join(Mill.home, 'logs', @run_id.to_s,
 					"#{Mill::Stages.slug(stage)}-#{number}.jsonl")
-				@claude.new(stage).run(prompt, number: number, worktree: @worktree,
-					log_path: log, session_id: session_id, env: Mill::Rules.env_for(stage))
+				attempt = @claude.new(stage).run(prompt, number: number, worktree: @worktree,
+					log_path: log, session_id: session_id,
+					env: Mill::Rules.env_for(stage, owner: @owner, name: @name),
+					secrets: Mill::Secrets.values_for(stage, owner: @owner, name: @name),
+					on_spawn: method(:record_identity))
+				forget_identity
+				attempt
 			end
+		end
+
+		# What the supervisor reaps against, recorded the moment the group exists.
+		# A run between stages holds no identity, which is a different state from a
+		# run whose process mill has lost — the supervisor distinguishes them by
+		# whether it has a thread walking the run, not by these columns.
+		def record_identity(pid, pgid, started_at, boot_at)
+			@db[:runs].where(id: @run_id).update(pid: pid, pgid: pgid, pid_started_at: started_at,
+				host_boot_at: boot_at, heartbeat_at: Mill.now)
+			@on_identity&.call(pgid)
+		end
+
+		def forget_identity
+			@db[:runs].where(id: @run_id).update(pid: nil, pgid: nil, heartbeat_at: Mill.now)
 		end
 	end
 end

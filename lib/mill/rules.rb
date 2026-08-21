@@ -74,8 +74,8 @@ module Mill
 
 		def self.ca_bundle = CA_BUNDLES.find { |path| File.exist?(path) }
 
-		# The environment every stage runs with. Plan 3 adds the scoped GH_TOKEN and
-		# the per-repo secrets here; this is the hook they hang from.
+		# The environment every stage runs with: the CA bundle, the repo's own
+		# secrets, and — for the two stages that push — the narrow token.
 		#
 		# SSL_CERT_FILE is set for the benefit of anything a stage runs that reads
 		# a CA file — and **not** for `gh`, which it does not fix. Measured across
@@ -86,9 +86,14 @@ module Mill
 		# SSL_CERT_FILE on this platform, and `GODEBUG=x509usefallbackroots=1` was
 		# probed directly and made no difference either. The fix is architectural,
 		# not environmental — see the pr stage.
-		def self.env_for(_stage)
+		def self.env_for(stage, owner: nil, name: nil)
+			env = {}
 			bundle = ca_bundle
-			bundle ? { 'SSL_CERT_FILE' => bundle } : {}
+			env['SSL_CERT_FILE'] = bundle if bundle
+			env.merge!(Mill::Secrets.for_repo(owner, name))
+			token = Mill::Secrets.token if Mill::Secrets::PUSHING.include?(stage)
+			env['GH_TOKEN'] = token if token
+			env
 		end
 
 		def self.write!(home: Mill.home)

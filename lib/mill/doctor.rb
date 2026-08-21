@@ -27,7 +27,11 @@ module Mill
 			check_argv_invariants
 			check_skills
 			check_schema
+			check_secret_modes
+			check_clone_roots
+			check_bind
 			check_board
+			check_board_options
 			@ran = true
 			self
 		end
@@ -159,10 +163,27 @@ module Mill
 			end
 		end
 
+		# Tables alone are not enough. A database several migrations behind has
+		# every table and is still missing columns mill writes — and it fails at the
+		# moment a run is claimed, deep inside a worker thread, rather than here.
+		# Measured 2026-08-19: the first real poll against a stale database raised
+		# `table runs has no column named board_item_id` on every tick, and doctor
+		# had reported the schema green.
 		def check_schema
 			db = Mill.db
 			missing = %i[repos runs stage_attempts ci_fixes events] - db.tables
-			missing.empty? ? pass('schema') : fail('schema', "missing tables: #{missing.join(', ')}")
+			return fail('schema', "missing tables: #{missing.join(', ')}") if missing.any?
+
+			latest = Dir[File.join(Mill::DB::MIGRATIONS, '*.rb')]
+				.map { |path| File.basename(path).to_i }.max
+			applied = db[:schema_info].get(:version).to_i
+
+			if applied >= latest
+				pass('schema', "migration #{applied}")
+			else
+				fail('schema', "database is at migration #{applied}, code expects #{latest} — " \
+					'run `bundle exec rake mill:migrate`')
+			end
 		rescue StandardError => e
 			fail('schema', e.message)
 		end
@@ -173,6 +194,74 @@ module Mill
 		#
 		# Settled 2026-08-19: ProjectV2Workflow exposes `enabled`, so this is a
 		# direct check rather than the sentinel the design planned as a fallback.
+		# These values reach a subprocess environment. A mode drift is otherwise
+		# silent, and the runbook is the only thing that ever said to chmod them.
+		def check_secret_modes
+			dir = File.join(@home, 'secrets')
+			return unless Dir.exist?(dir)
+
+			loose = Dir.children(dir).select do |name|
+				path = File.join(dir, name)
+				File.file?(path) && (File.stat(path).mode & 0o777) != Mill::Secrets::MODE
+			end
+
+			if loose.empty?
+				pass('secrets files are 0600')
+			else
+				fail('secrets files are 0600', "#{loose.sort.join(', ')} — chmod 600 them")
+			end
+		end
+
+		# A root that does not exist silently turns into "clone it myself" for
+		# every repo, and mill then works in a checkout you are not looking at.
+		def check_clone_roots
+			missing = Mill::Repo.roots.reject { |root| Dir.exist?(root) }
+
+			if missing.empty?
+				pass('clone roots exist', Mill::Repo.roots.empty? ? 'none set; mill clones its own' : nil)
+			else
+				fail('clone roots exist', "MILL_CLONES names #{missing.join(', ')}, which do not exist")
+			end
+		end
+
+		# The write paths are a kill switch and a worktree deleter, and the log
+		# endpoint streams repo contents. On loopback the interface is the boundary;
+		# anywhere else, the allowlist is the only thing in front of them.
+		def check_bind
+			bind = ENV['MILL_BIND'].to_s
+			return pass('bind is loopback or guarded', 'loopback') if
+				bind.empty? || bind.include?('127.0.0.1') || bind.include?('localhost')
+
+			if ENV['MILL_ADMIN_EMAILS'].to_s.strip.empty?
+				fail('bind is loopback or guarded',
+					"MILL_BIND=#{bind} is reachable off this machine and MILL_ADMIN_EMAILS is empty")
+			else
+				pass('bind is loopback or guarded', bind)
+			end
+		end
+
+		# mill writes five Status values. A board missing one fails at the moment
+		# it matters — a run finishing, or blocking — rather than at setup.
+		def check_board_options
+			return if @project.nil? || @project_owner.nil?
+
+			github = @github || Mill::Github.new
+			status = github.project_fields(@project, owner: @project_owner)
+				.find { |field| field[:name] == 'Status' }
+			return fail('board Status has every option mill writes', 'no Status field') if status.nil?
+
+			names = status.fetch(:options, []).map { |option| option[:name] }
+			missing = Mill::Board::STATUS.values.uniq - names
+
+			if missing.empty?
+				pass('board Status has every option mill writes')
+			else
+				fail('board Status has every option mill writes', "missing #{missing.join(', ')}")
+			end
+		rescue StandardError => e
+			fail('board Status has every option mill writes', e.message)
+		end
+
 		def check_board
 			return fail('board configured', 'set MILL_PROJECT and MILL_PROJECT_OWNER — see the runbook') if
 				@project.nil? || @project_owner.nil?

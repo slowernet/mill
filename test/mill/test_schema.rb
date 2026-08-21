@@ -120,6 +120,19 @@ module Mill
 			end
 		end
 
+		# The identity of a live process belongs to the run, not to the attempt row:
+		# the attempt row does not exist until the attempt is over, so a supervisor
+		# reaping a running stage would have nothing to check it against.
+		def test_a_run_carries_the_identity_of_its_live_process
+			columns = db.schema(:runs).map(&:first)
+
+			assert_includes columns, :pid
+			assert_includes columns, :pgid
+			assert_includes columns, :pid_started_at
+			assert_includes columns, :host_boot_at
+			assert_includes columns, :board_item_id
+		end
+
 		def test_events_dedupe_on_node_id
 			repo = create_repo
 			db[:events].insert(repo_id: repo, kind: 'comment', gh_node_id: 'IC_1', created_at: Mill.now)

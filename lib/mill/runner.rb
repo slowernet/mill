@@ -11,12 +11,14 @@ module Mill
 
 		attr_reader :run_id, :state
 
-		def initialize(db:, run_id:, launcher:, github: nil, context: {})
+		def initialize(db:, run_id:, launcher:, github: nil, context: {}, pause: method(:sleep))
 			@db = db
 			@run_id = run_id
 			@launcher = launcher
 			@github = github
 			@context = context
+			# Injected so a test can assert the wait without taking it.
+			@pause = pause
 			@ledger = Mill::Ledger.new(db, run_id)
 			@sessions = {}
 			@artifacts = {}
@@ -46,6 +48,22 @@ module Mill
 		def restore
 			raise Mill::Error, "run #{@run_id} is not blocked" unless run_row[:status] == 'blocked'
 
+			reload
+			rescue_from_strikes
+			self
+		end
+
+		# Picks a run back up where it was. Two callers, and they differ only in what
+		# they are entitled to do afterwards: answering a blocked run may also spend
+		# its one sanctioned strike reset, while a run the supervisor interrupted may
+		# not — nobody answered anything.
+		#
+		# Without this, a restarted run began at the first stage of its route and
+		# re-ran every stage it had already banked: `plan` would write its artifact
+		# a second time and the ledger would count fresh attempts against stages
+		# that had already passed. @stage is otherwise `route_stages.first`, because
+		# that is the right answer only for a run that has never launched anything.
+		def reload
 			@db[:stage_attempts].where(run_id: @run_id).order(:id).each do |row|
 				verdict = row[:verdict_json] ? JSON.parse(row[:verdict_json], symbolize_names: true) : {}
 				@sessions[row[:stage]] = row[:session_id]
@@ -53,7 +71,6 @@ module Mill
 				@verdicts << { stage: row[:stage], status: verdict[:status], summary: verdict[:summary] }
 			end
 			@stage = run_row[:current_stage] || route_stages.first
-			rescue_from_strikes
 			self
 		end
 
@@ -71,6 +88,10 @@ module Mill
 			return halt(:blocked, "#{@stage} has used both its strikes") if tally.out_of_strikes?
 			return halt(:blocked, "#{@stage} hit its number cap") if tally.out_of_attempts?
 
+			# Recorded before the launch, not after it. This is what the supervisor
+			# reads to know which stage to charge for an interruption, and an
+			# interruption is by definition something that happens mid-launch.
+			@db[:runs].where(id: @run_id).update(current_stage: @stage)
 			settle(launch(@stage, tally.next_attempt), tally.next_attempt)
 		end
 
@@ -115,6 +136,8 @@ module Mill
 				@sessions[@stage] = nil
 				@ledger.charge(stage: @stage, outcome: :resume_failed, number: number, attempt: attempt)
 				:rerun
+			when :rate_limited
+				wait_out_the_limit(attempt)
 			when :blocked
 				@ledger.charge(stage: @stage, outcome: :blocked, number: number, attempt: attempt)
 				halt(:blocked, "#{@stage} asked a question", questions: attempt.verdict.questions)
@@ -125,6 +148,39 @@ module Mill
 				@ledger.charge(stage: @stage, outcome: outcome, number: number, attempt: attempt)
 				:rerun
 			end
+		end
+
+		# A launch the subscription refused costs nothing and produced nothing, so
+		# there is no row to insert and no counter in the database to bound it —
+		# which is why the cap is held here. Free is not unlimited.
+		#
+		# Waiting in this thread is correct rather than lazy: the run is waiting,
+		# not working, and the supervisor leaves a run alone while its thread is
+		# alive. Retrying straight away would be a hot loop against a door that
+		# does not open for hours.
+		def wait_out_the_limit(attempt)
+			@rate_limit_waits = @rate_limit_waits.to_i + 1
+			if @rate_limit_waits > Mill::Ledger::MAX_RATE_LIMIT_WAITS
+				return halt(:blocked, "#{@stage} has been rate limited " \
+					"#{Mill::Ledger::MAX_RATE_LIMIT_WAITS} times without getting a launch. " \
+					'Nothing was charged against it — the subscription refused the launch, the ' \
+					'stage did not fail. Reply here to try again.')
+			end
+
+			@ledger.charge(stage: @stage, outcome: :rate_limited)
+			seconds = self.class.rate_limit_pause(attempt.rate_limit_resets_at)
+			warn "#{@stage} is rate limited; waiting #{seconds}s for the window"
+			@pause.call(seconds)
+			:rerun
+		end
+
+		# Never shorter than a minute in case the reset has just passed, never
+		# longer than the cap in case the clocks disagree, and the cap when the CLI
+		# did not say when the window reopens.
+		def self.rate_limit_pause(resets_at, now: Mill.now)
+			return Mill::Ledger::MAX_RATE_LIMIT_PAUSE if resets_at.nil?
+
+			[[resets_at.to_i - now, 60].max, Mill::Ledger::MAX_RATE_LIMIT_PAUSE].min
 		end
 
 		def advance(attempt, number)

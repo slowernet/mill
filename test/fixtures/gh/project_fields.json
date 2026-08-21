@@ -1,0 +1,9 @@
+{"fields":[
+ {"id":"PVTSSF_status","name":"Status","type":"ProjectV2SingleSelectField",
+  "options":[{"id":"opt_ready","name":"Ready"},{"id":"opt_running","name":"Running"},
+             {"id":"opt_blocked","name":"Blocked"},{"id":"opt_done","name":"Done"},
+             {"id":"opt_failed","name":"Failed"}]},
+ {"id":"PVTSSF_evidence","name":"Evidence","type":"ProjectV2SingleSelectField",
+  "options":[{"id":"opt_required","name":"Required"}]},
+ {"id":"PVTSSF_review","name":"Review","type":"ProjectV2SingleSelectField",
+  "options":[{"id":"opt_deep","name":"Deep"}]}]}

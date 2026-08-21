@@ -137,14 +137,14 @@ Plans 1 and 2 are complete, and a real pull request came out of the far end on 2
 | `Mill::Rules`, `Mill::Doctor` | Built. Rulesets written from one definition and checked against it |
 | Stage prompts, `mill:implement`, `mill:pr`, `mill-headless` | Built for the `plan` route only |
 | The `plan` route, end to end | **Demonstrated.** `slowernet/mill-scratch#2`, 18 minutes, no strikes |
-| `Mill::Poller` | Not built. No board reads, no comment cursors, no triggers |
-| `Mill::Supervisor` | Not built. No repo preparation, worktree lifecycle, concurrency cap, lock clearing, or reaping |
+| `Mill::Poller` | Built. Reconciles the board, sweeps comments behind a transactional cursor sent to GitHub as `since`, dispatches an answer to a blocked run. Two of five triggers dispatch; the rest record `no_route` |
+| `Mill::Supervisor` | Built, minus the power assertion. Prepares repos, resolves or makes the clone, claims to a cap, clears stale locks, walks each run in its own thread, tears down, and reaps against a verified identity |
 | Sleep and wake | Clock pair built and its premise measured; nothing reads it. No settle window, no stall detector, no power assertion |
 | The Linux server, which is the primary target | **Never run.** Every line of mill has only ever executed on macOS, including all fourteen boundary tests |
-| Web UI | Not built. No routes, no kill switch, no log view |
+| Web UI | Boot path only. `app.rb`, `config.ru` and `config/puma.rb` exist and `GET /` reports worker health; no run list, kill switch or log view |
 | `fast` and `iterate` routes | Not built. `diagnose`, `implement:fast` and `push` have config and rulesets but no prompts, and have never run |
-| Board writes, comments | `Mill::Github#comment` exists; nothing calls it. mill has never written a Status |
-| Secrets injection, scoped `GH_TOKEN` | Not built. `Mill::Rules.env_for` is the hook and carries one variable |
+| Board writes, comments | Built. Status on claim, block, resume and finish, re-driven from `desired_board_status` when a write did not land. Questions, block reasons and outcomes post to the subject |
+| Secrets injection, scoped `GH_TOKEN` | Built, never exercised against a repo that declares any — `mill-scratch` sets `secrets: []`. Values under 16 characters reach the stage but are never redacted, because the scrubber would corrupt the log |
 | Deep review, evidence requirement, retention, CI-fix trigger | Not built. `ci_fixes` and `events` exist as tables and are unused |
 
 **Built but never exercised**, which is a different thing from built:
@@ -798,7 +798,22 @@ is exactly the truth.
 | `--resume` failed, so mill started fresh with the context appended | +1 | none |
 | mill restarted and interrupted it | +1 | none |
 | A stale git lock was cleared before it ran | n/a | none |
-| It is waiting behind a rate limit | no launch | none |
+| It is waiting behind a rate limit, and handed back no verdict | no launch | none |
+| It was throttled but handed back a verdict anyway | +1 | priced on the verdict |
+
+**The verdict decides whether a limit refused the launch, not the exit status.** The rate-limit
+flag says only what the last such event in the stream was, and an "allowed" heartbeat clears it —
+so a stage throttled early that then gets its launch and finishes still carries the flag. Reading
+the flag alone discarded that finished work, and because the free outcome inserts no row the
+relaunch reused the log filename and destroyed the successful run's log. Exit status cannot stand
+in for the verdict either: nothing has yet measured what a refused launch exits with, and the one
+refusal mill has measured — a session the CLI would not reopen — is reported in-band.
+
+This leaves one case knowingly mispriced. A launch that ran, hit the window partway and handed
+back nothing is indistinguishable here from one refused outright, so it is priced as "no launch":
+it loses its log to the relaunch, and its session with it. Separating the two needs the stream
+rather than the ledger — a session id, a model, any turns at all — and pricing a launch that did
+happen as an attempt that cost no strike.
 
 The rule behind the table: **a strike means the work was wrong. Everything the machine did to a
 stage is free.** A laptop that slept, a socket that died, a lock file left by a SIGKILL, and mill
@@ -1184,9 +1199,10 @@ supervisor prepares it on first touch:
    of yours is never touched beyond local git config.
 2. **Set `gc.auto=0` and `maintenance.auto=0`** so a stage's commit cannot trigger a gc that
    rewrites shared refs while other runs hold them.
-3. **Read `.mill.yml`** from the base branch into `repos.config_json`: base branch, test
+3. **Set the commit identity**, without which a stage cannot commit at all. See below.
+4. **Read `.mill.yml`** from the base branch into `repos.config_json`: base branch, test
    command, gating CI workflow, trusted PR authors, `evidence_public`, secret variable names.
-4. **Verify** the token covers the repo and `~/.mill/secrets/<owner>-<repo>.env` exists.
+5. **Verify** the token covers the repo and `~/.mill/secrets/<owner>-<repo>.env` exists.
 
 If anything is missing, mill blocks **that item** and comments naming exactly what. mill writes
 nothing to the repo — it uses no labels — so it only reads, apart from setting local git
@@ -1195,6 +1211,23 @@ config.
 mill reads `.mill.yml` only from the base branch, never from the worktree HEAD, and pins the
 resolved config onto the run. An agent can edit `.mill.yml` in its worktree; that edit must not
 weaken the next run.
+
+**mill's commits say a machine wrote them.** A stage runs `git commit` inside a worktree of
+mill's clone, and `git clone` copies no config, so a clone starts with no identity of its own.
+The identity is mill's own setting rather than a `.mill.yml` key: that file lives in the repo
+being worked on, and whoever can commit to its base branch would otherwise choose the name your
+credentials push under.
+
+You are the **author** and mill is the **committer**. `git blame` keeps pointing at the person
+who wanted the change, while `git log` and GitHub both show that a machine made the commit. The
+committer is named `mill` and uses the author's address, so the commit still links to the
+account answerable for it instead of showing as an unrecognised stranger. mill sets this through
+`GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` in the stage environment, beside the secrets.
+
+With no identity configured the author falls back to the machine's own git config, which is why
+a laptop needs nothing set. A server with no `~/.gitconfig` has nothing to fall back to, so
+`rake mill:doctor` fails when no identity resolves — otherwise the first run dies part-way
+through `implement` and the stage is charged a strike for something the machine did to it.
 
 **mill injects secrets.** A fresh worktree holds tracked files only, so `.env` and
 `config/master.key` are missing, and a suite that needs them would fail identically on both
@@ -1206,8 +1239,8 @@ into the worktree, and keeps those values out of the tee'd log.
 `project` scope; the board's three fields and their options; that you disabled the built-in
 workflows; the stage token's permissions, expiry, and file mode; `~/.mill` modes; the permission
 rulesets' deny rules; and, for every repo the board currently references, that it can resolve
-the clone, that `gc.auto` is set, that `.mill.yml` parses, that branch protection requires
-checks, and that the named secret variables exist. Most of what it checks is critical to
+the clone, that `gc.auto` is set, that a commit identity resolves, that `.mill.yml` parses, that
+branch protection requires checks, and that the named secret variables exist. Most of what it checks is critical to
 containment, so a red doctor blocks everything.
 
 **Off switch:** remove items from the board, or drop the repo from the token's repository list.
@@ -1411,7 +1444,7 @@ Over time these numbers establish what each stage normally uses, so an unusual r
 and when mill adds per-token billing the history is already there.
 
 Front-end conventions — the layout contract, design tokens, the component catalog, and how the
-log tail polls — are in `docs/reference/admin-ui-frontend.md`.
+log tail polls — are in `docs/notes/admin-ui-frontend.md`.
 
 ## Killing a run and tearing it down
 
@@ -2073,7 +2106,7 @@ evasion of a permission control; containment held on the honour system as well a
 
 ### Plan 3a — Autonomy
 
-**Not started.** The clock pair exists and nothing reads it.
+**Done, 2026-08-19.** See the rehearsal record below.
 
 - `Mill::Workers` and the Roda host: `app.rb`, `config.ru`, both threads under one supervising
   loop that restarts either with backoff, `GET /` reporting whether both heartbeats are fresh,
@@ -2093,6 +2126,44 @@ evasion of a permission control; containment held on the honour system as well a
 Only two of the five triggers dispatch, because only the `plan` route exists: an item that is
 `Ready` with no active run, and a comment on a `Blocked` item. The sweep itself is built in full,
 so Plan 5 adds dispatch and touches none of it.
+
+**Done, 2026-08-19.** Two pull requests nobody opened by hand: `mill-scratch#4` from a clean run,
+and `#6` from a run that blocked at `plan`, asked three questions, took an answer from a comment and
+resumed its own session. Zero strikes on either. Then a crash test: mill killed outright mid-stage,
+twice, each time leaving a live process group orphaned — recovered both times, charging an attempt
+and no strike, and re-entering the stage it was in rather than the top of the route. And nineteen
+and a half hours running unattended overnight, surviving eight transient API failures with both
+threads alive in the morning and about 12% of the GraphQL budget consumed per hour at a 30-second
+tick, which is why the default tick is now 60.
+
+**What the rehearsal cost, and what it bought.** Ten defects, six of them in code written that day,
+and the fixture suite could not have caught any of the six. That is the finding worth keeping.
+
+Four of the six were the same shape: **each component correct alone, each tested alone, the defect
+in the handoff.** `Mill::Workers` assembled a supervisor without a board, so mill would have run the
+whole pipeline and never written a Status — and since a comment only means an answer while the board
+says `Blocked`, no blocked run could ever have been resumed. `Supervisor#walk` returned a database
+row where `finish` expected the runner's state, so the first real block posted ``Blocked at ``: .``
+to the issue: mill asked three good questions and threw all of them away, which is worse than a
+crash, because the board says `Blocked`, the worktree waits, and there is no way to learn what for.
+Nothing owned the `blocked → running` transition, so a resumed run stayed invisible to the reaper
+for the rest of its route. And a restarted run began at the top of its route, re-running every stage
+it had banked.
+
+The other two: doctor passed a database three migrations behind, because it checked that tables
+existed and the missing thing was a column; and the log scrubber would have corrupted the
+`stream-json` it parses back, given a secrets file with a short value like `DEBUG=true`.
+
+Two runbook steps also turned out not to work as written — the built-in `Status` field can be
+neither deleted nor recreated, and disabling the board's workflows is the one setup step with no
+API at all.
+
+**The lesson for the next plan.** An adversarial review of this plan's code, before a line of it
+existed, found twelve defects including four that would have stopped the factory silently. It
+caught that two `Mill::Supervisor` instances would make the reaper kill healthy stages. The fix was
+to share one instance — and the shared instance was built without a board, which is finding 6.
+Reviews catch the layer they are looking at. Only running the assembled thing catches the seam
+below it.
 
 ### Plan 3b — Resilience
 

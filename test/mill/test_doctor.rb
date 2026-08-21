@@ -304,5 +304,114 @@ module Mill
 				refute_predicate doctor(home), :ok?
 			end
 		end
+
+		# --- Plan 3a's preconditions --------------------------------------------
+
+		def teardown
+			%w[MILL_CLONES MILL_BIND MILL_ADMIN_EMAILS].each { |name| ENV.delete(name) }
+		end
+
+		# These values reach a subprocess environment, and the runbook is the only
+		# thing that ever said to chmod them.
+		def test_a_world_readable_secrets_file_fails
+			with_home do |home|
+				path = File.join(home, 'secrets', 'slowernet-rep.env')
+				File.write(path, "A=1\n")
+				FileUtils.chmod(0o644, path)
+
+				assert_match(/slowernet-rep\.env/, check(home, 'secrets files are 0600').detail)
+			end
+		end
+
+		def test_correctly_moded_secrets_pass
+			with_home do |home|
+				path = File.join(home, 'secrets', 'slowernet-rep.env')
+				File.write(path, "A=1\n")
+				FileUtils.chmod(0o600, path)
+
+				assert_predicate check(home, 'secrets files are 0600'), :ok
+			end
+		end
+
+		# A root that does not exist silently becomes "clone it myself" for every
+		# repo, and mill then works in a checkout nobody is looking at.
+		def test_a_clone_root_that_does_not_exist_is_named
+			ENV['MILL_CLONES'] = '/no/such/place'
+
+			with_home do |home|
+				assert_match(%r{/no/such/place}, check(home, 'clone roots exist').detail)
+			end
+		end
+
+		def test_no_clone_roots_is_not_a_failure
+			ENV['MILL_CLONES'] = ''
+
+			with_home do |home|
+				assert_predicate check(home, 'clone roots exist'), :ok
+			end
+		end
+
+		# The write paths are a kill switch and a worktree deleter. On loopback the
+		# interface is the boundary; anywhere else the allowlist is all there is.
+		def test_a_public_bind_with_no_admin_list_fails
+			ENV['MILL_BIND'] = 'tcp://0.0.0.0:9494'
+
+			with_home do |home|
+				refute_predicate check(home, 'bind is loopback or guarded'), :ok
+			end
+		end
+
+		def test_a_public_bind_with_an_admin_list_passes
+			ENV['MILL_BIND'] = 'tcp://0.0.0.0:9494'
+			ENV['MILL_ADMIN_EMAILS'] = 'eshepard@slower.net'
+
+			with_home do |home|
+				assert_predicate check(home, 'bind is loopback or guarded'), :ok
+			end
+		end
+
+		def test_the_default_loopback_bind_passes
+			with_home do |home|
+				assert_predicate check(home, 'bind is loopback or guarded'), :ok
+			end
+		end
+
+		# mill writes five Status values, and a board missing one fails at the
+		# moment it matters — a run blocking, or finishing — rather than at setup.
+		def test_a_board_missing_a_status_option_is_named
+			gh = Mill::Github.new(runner: lambda { |args|
+				next '{"fields":[{"id":"F","name":"Status","options":[{"id":"1","name":"Ready"}]}]}' if
+					args[1] == 'field-list'
+
+				'{"data":{"user":{"projectV2":{"workflows":{"nodes":[]}}}}}'
+			})
+
+			with_home do |home|
+				checked = Mill::Doctor.new(home: home, github: gh, project: '3',
+					project_owner: 'slowernet').run
+				found = checked.checks.find { |c| c.name == 'board Status has every option mill writes' }
+
+				refute_predicate found, :ok
+				assert_match(/Blocked/, found.detail)
+			end
+		end
+
+		def test_a_complete_board_passes_its_option_check
+			gh = Mill::Github.new(runner: lambda { |args|
+				next File.read(File.join(__dir__, '..', 'fixtures', 'gh', 'project_fields.json')) if
+					args[1] == 'field-list'
+
+				'{"data":{"user":{"projectV2":{"workflows":{"nodes":[]}}}}}'
+			})
+
+			with_home do |home|
+				checked = Mill::Doctor.new(home: home, github: gh, project: '3',
+					project_owner: 'slowernet').run
+
+				assert_predicate checked.checks.find { |c|
+					c.name == 'board Status has every option mill writes'
+				}, :ok
+			end
+		end
 	end
 end
